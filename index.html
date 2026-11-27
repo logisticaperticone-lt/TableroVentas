@@ -69,11 +69,14 @@ main{padding:14px;max-width:1700px;margin:0 auto}
 /* tablas */
 .tw{overflow:auto;max-height:560px;border:1px solid var(--line);border-radius:6px;margin-top:8px}
 table.tt{border-collapse:separate;border-spacing:0;width:100%;font-variant-numeric:tabular-nums}
-.tt th{position:sticky;top:0;background:var(--brand);z-index:2;font-weight:600;color:#fff;font-size:11.5px;text-align:right;padding:6px 8px;border-bottom:2px solid var(--accent);white-space:nowrap;cursor:pointer;user-select:none}
+.tt th{position:sticky;top:0;background:var(--brand);z-index:2;font-weight:600;color:#fff;font-size:11.5px;text-align:center;padding:6px 12px;border-bottom:2px solid var(--accent);white-space:nowrap;cursor:pointer;user-select:none}
+.tt th .rz{position:absolute;top:0;right:-3px;width:7px;height:100%;cursor:col-resize;z-index:4}
+.tt th .rz:hover,.tt th .rz.on{background:var(--accent);opacity:.6}
+.tt th.ancho,.tt td.ancho{overflow:hidden;text-overflow:ellipsis}
 .tt th:first-child{text-align:left;left:0;z-index:3}
 .tt th.sorted::after{content:" ▾";color:#ffb26b}
 .tt th.sorted.asc::after{content:" ▴"}
-.tt td{padding:4px 8px;border-bottom:1px solid #f0f0f0;text-align:right;white-space:nowrap}
+.tt td{padding:4px 8px;border-bottom:1px solid #f0f0f0;text-align:center;white-space:nowrap}
 .tt td:first-child{text-align:left;position:sticky;left:0;background:inherit;max-width:340px;overflow:hidden;text-overflow:ellipsis}
 .tt tr{background:#fff}
 .tt tr:hover{background:var(--hover)}
@@ -362,7 +365,7 @@ function aFirestore(parcial) {
 // Aplica las listas de AJUSTES (marcas agrupadas, supervisores, canales, TOP, P1&P4, días)
 function aplicarMapeos(mp) {
   mp = desdeFirestore(mp);
-  D.mapeos = {marcas: mp.marcas || [], supervisores: mp.supervisores || [], canales: mp.canales || [], top: mp.top || [], p1p4: mp.p1p4 || [], dias: mp.dias || [], objExtra: mp.objExtra || {}};
+  D.mapeos = {marcas: mp.marcas || [], supervisores: mp.supervisores || [], canales: mp.canales || [], top: mp.top || [], p1p4: mp.p1p4 || [], dias: mp.dias || [], objExtra: mp.objExtra || {}, objMes: mp.objMes || {}};
   const mMarca = new Map(D.mapeos.marcas.map(r => [norm(r[0]), r])), mSup = new Map(D.mapeos.supervisores.filter(r => r[1]).map(r => [norm(r[0]), r[1]]));
   const mCanal = new Map(D.mapeos.canales.filter(r => r[1]).map(r => [norm(r[0]), r[1]]));
   const top = new Set(D.mapeos.top.map(Number)), p1 = new Set(D.mapeos.p1p4.map(Number));
@@ -1031,11 +1034,16 @@ function mesDePagina(pg) { if (!pg.mes || !D.diaMes[pg.mes]) pg.mes = D.diaMes[D
 
 // ---- Objetivos del planificador (por vendedor). El planificador guarda solo el último mes cargado;
 // los meses anteriores salen del historial que va guardando la PC (base.objAD).
-function filasObjetivo(mes) {
+// Prioridad: 1) cargados en ⚙ Ajustes del tablero  2) planificador (mes que tiene cargado)  3) historial que guarda la PC
+function fuenteObjetivo(mes) {
+  const t = (D.mapeos.objMes || {})[mes];
+  if (t && t.length) return {filas: t, de: "tablero"};
   const o = D.plan.objetivos;
-  if (o && o.mes === mes && (o.filas || []).length) return o.filas;
-  return D.objAD[mes] || null;
+  if (o && o.mes === mes && (o.filas || []).length) return {filas: o.filas, de: "planificador"};
+  if (D.objAD[mes] && D.objAD[mes].length) return {filas: D.objAD[mes], de: "historial"};
+  return {filas: null, de: ""};
 }
+function filasObjetivo(mes) { return fuenteObjetivo(mes).filas; }
 // Filas de la tabla que NO son de un vendedor (total empresa, mesas, supervisores): no se suman
 function esFilaGrupo(x) {
   const n = normNombre(x.nombre);
@@ -1300,6 +1308,77 @@ function tablaSimple(cabeceras, filas, alto = 360) {
     el("thead", {}, el("tr", {}, ...cabeceras.map((h, j) => el("th", {style: j ? "" : "text-align:left"}, h)))),
     el("tbody", {}, ...filas.map(f => el("tr", {}, ...f.map(c => el("td", {style: "text-align:left"}, c)))))));
 }
+// ---------- Objetivos por vendedor y segmento (cualquier mes)
+const parseNum = t => { t = String(t ?? "").trim().replace(/\s|\$/g, ""); if (!t) return 0; if (t.includes(",")) t = t.replace(/\./g, "").replace(",", "."); return parseFloat(t) || 0; };
+function editorObjetivos(box) {
+  const pg = PAGINAS.ajustes;
+  const meses = []; for (let n = -12; n <= 1; n++) meses.push(sumarMes(D.mesActual, n));
+  if (!pg.mesObj || !meses.includes(pg.mesObj)) pg.mesObj = D.mesActual;
+  const M = pg.mesObj, fu = fuenteObjetivo(M), filasAct = fu.filas || [];
+  const segs = SEGMENTOS_AD;
+  // vendedores en el orden de las mesas
+  const ordenMesa = v => { const [m, sub] = mesaDe(v.sv); const i = MESAS.findIndex(x => x.id === m); return (i < 0 ? 90 : i * 10) + (sub && sub.endsWith("MAY") ? 1 : 0); };
+  const vend = D.plan.vendedores.slice().sort((a, b) => ordenMesa(a) - ordenMesa(b) || a.pv - b.pv);
+  const inps = vend.map(v => { const f = fu.filas ? filaObjetivo(fu.filas, v) : null;
+    return {v, c: Object.fromEntries(segs.map(sg => [sg, el("input", {class: "inp", type: "text", inputmode: "decimal", style: "width:78px;min-width:0;text-align:right",
+      value: f && f.obj && +f.obj[sg] ? String(f.obj[sg]).replace(".", ",") : ""})]))}; });
+  const ex = (D.mapeos.objExtra || {})[M] || {};
+  const vin = el("input", {class: "inp", type: "text", value: ex.VINOS ? String(ex.VINOS).replace(".", ",") : ""});
+  const mk = el("input", {class: "inp", type: "text", value: ex.MKTPLACE ? String(ex.MKTPLACE).replace(".", ",") : ""});
+  // total en vivo
+  const tds = Object.fromEntries(segs.map(sg => [sg, el("td", {style: "font-weight:700"})]));
+  const recalcular = () => segs.forEach(sg => { tds[sg].textContent = nf1.format(inps.reduce((t, x) => t + parseNum(x.c[sg].value), 0)); });
+  inps.forEach(x => segs.forEach(sg => x.c[sg].addEventListener("input", recalcular))); recalcular();
+  // pegar desde Excel (misma tabla que se pega en el planificador: con títulos de segmentos)
+  const area = el("textarea", {class: "inp", rows: 4, style: "width:100%;font-family:monospace;font-size:11px", placeholder: "Pegá acá la tabla de objetivos copiada del Excel, con la fila de títulos (CVZ CMQ, PREMIUM, CORE + VALUE…). Se pueden incluir las filas de mesa y de total: se toman solo los vendedores."});
+  const pegar = () => {
+    const lineas = area.value.split(/\r?\n/).map(l => l.split("\t"));
+    const iH = lineas.findIndex(c => c.some(x => [...segs, "VINOS", "MKTPLACE"].some(sg => normNombre(sg) === normNombre(x))));
+    if (iH < 0) { alert("No encontré la fila de títulos (CVZ CMQ, PREMIUM, CORE + VALUE…). Copiá la tabla junto con los títulos."); return; }
+    const col = {}; lineas[iH].forEach((x, i) => { const sg = [...segs, "VINOS", "MKTPLACE"].find(s => normNombre(s) === normNombre(x)); if (sg && !(sg in col)) col[sg] = i; });
+    const primera = Math.min(...Object.values(col));
+    const filas = [];
+    lineas.slice(iH + 1).forEach(c => {
+      const tx = c.slice(0, primera).map(x => String(x || "").trim());
+      const pv = parseInt(tx.find(x => /^\d+$/.test(x))) || 0, nombre = tx.filter(x => x && !/^\d+$/.test(x)).pop() || "";
+      if (!pv && !nombre) return;
+      filas.push({pv, nombre, obj: Object.fromEntries(Object.entries(col).map(([sg, i]) => [sg, parseNum(c[i])]))});
+    });
+    let n = 0;
+    inps.forEach(x => { const f = filaObjetivo(filas, x.v); if (!f) return; n++; segs.forEach(sg => { if (sg in col) x.c[sg].value = f.obj[sg] ? String(f.obj[sg]).replace(".", ",") : ""; }); });
+    const tot = filas.find(f => normNombre(f.nombre).includes("TOTAL"));
+    if (tot) { if ("VINOS" in col && tot.obj.VINOS) vin.value = String(tot.obj.VINOS).replace(".", ","); if ("MKTPLACE" in col && tot.obj.MKTPLACE) mk.value = String(tot.obj.MKTPLACE).replace(".", ","); }
+    recalcular();
+    const faltan = inps.filter(x => !filaObjetivo(filas, x.v)).map(x => x.v.nombre);
+    alert(`Completé ${n} vendedores. Revisá y tocá "Guardar objetivos de ${mesTxtLargo(M)}".` + (faltan.length ? "\n\nNo encontré en la tabla a:\n" + faltan.join("\n") : ""));
+  };
+  const guardar = () => {
+    const filas = inps.map(x => ({pv: x.v.pv, nombre: x.v.nombre, obj: Object.fromEntries(segs.map(sg => [sg, parseNum(x.c[sg].value)]))}))
+                      .filter(f => Object.values(f.obj).some(v => v));
+    const om = {...(D.mapeos.objMes || {})}; if (filas.length) om[M] = filas; else delete om[M];
+    guardarMapeos({objMes: om, objExtra: {...(D.mapeos.objExtra || {}), [M]: {VINOS: parseNum(vin.value), MKTPLACE: parseNum(mk.value)}}});
+  };
+  const quitar = () => { const om = {...(D.mapeos.objMes || {})}; delete om[M]; guardarMapeos({objMes: om}); };
+  const selM = el("select", {class: "inp", onchange: e => { pg.mesObj = e.target.value; refrescar(); }});
+  [...meses].reverse().forEach(m => selM.append(el("option", {value: m}, mesTxtLargo(m)))); selM.value = M;
+  const origen = {tablero: "cargados acá, en el tablero", planificador: "los del planificador (AJUSTES → Objetivos del mes)", historial: "los que guardó la PC del planificador", "": "todavía no hay objetivos"}[fu.de];
+  box.append(
+    el("div", {style: "display:flex;gap:10px;align-items:center;flex-wrap:wrap"}, el("label", {class: "selmes"}, "Mes", selM),
+      el("span", {class: "nota", style: "margin:0"}, `Se están usando: `, el("b", {}, origen))),
+    el("div", {class: "nota"}, "Objetivos en HL por vendedor para Avance diario y Cierre vendedores. Lo que se guarda acá tiene prioridad sobre el planificador. ",
+      "Ojo: el AD del planificador sigue usando los que tiene cargados el planificador; el mes en curso conviene cargarlo allá (o en los dos)."),
+    area, el("div", {style: "margin:6px 0 10px"}, el("button", {class: "btn", onclick: pegar}, "Completar desde lo pegado")),
+    el("div", {class: "tw", style: "max-height:520px"}, el("table", {class: "tt"},
+      el("thead", {}, el("tr", {}, el("th", {style: "text-align:left"}, "Vendedor"), el("th", {}, "Mesa"), ...segs.map(sg => el("th", {}, sg)))),
+      el("tbody", {}, ...inps.map(x => el("tr", {}, el("td", {}, `${x.v.pv} · ${x.v.nombre}`), el("td", {style: "font-size:11px;color:#6b7280"}, x.v.sv || ""), ...segs.map(sg => el("td", {}, x.c[sg]))))),
+      el("tfoot", {}, el("tr", {class: "total"}, el("td", {}, "TOTAL EMPRESA"), el("td", {}), ...segs.map(sg => tds[sg]))))),
+    el("div", {style: "display:flex;gap:16px;align-items:end;flex-wrap:wrap;margin-top:12px"},
+      el("label", {class: "selmes"}, "VINOS (HL, empresa)", vin), el("label", {class: "selmes"}, "MKTPLACE ($ netos, empresa)", mk)),
+    el("div", {style: "display:flex;gap:8px;margin-top:12px"},
+      el("button", {class: "btn prim", onclick: guardar}, `Guardar objetivos de ${mesTxtLargo(M)}`),
+      fu.de === "tablero" ? el("button", {class: "btn", onclick: quitar}, "Borrar los de acá (volver a los del planificador)") : null));
+  return box;
+}
 function badge(n) { return el("span", {class: n ? "badge rojo" : "badge verde"}, n ? String(n) : "OK"); }
 
 function pendientes() {
@@ -1373,7 +1452,7 @@ PAGINAS.ajustes = {t: "⚙ Ajustes", soloAdmin: true, sinFiltros: true, lista: "
 
   // ---------- listas completas
   const listas = el("div", {class: "card", style: "margin-top:14px"});
-  const tabs = [["marcas", "Marcas"], ["supervisores", "Supervisores"], ["canales", "Canales"], ["top", "Calibres TOP"], ["p1p4", "P1 & P4 VALUE"], ["dias", "Días hábiles"], ["objextra", "Objetivos VINOS / MKTPLACE"]];
+  const tabs = [["marcas", "Marcas"], ["supervisores", "Supervisores"], ["canales", "Canales"], ["top", "Calibres TOP"], ["p1p4", "P1 & P4 VALUE"], ["dias", "Días hábiles"], ["objextra", "Objetivos del mes"]];
   listas.append(el("h3", {}, "Listas", el("span", {class: "sub"}, "todo lo que usa el tablero para agrupar")),
     el("div", {class: "seg", style: "margin:8px 0"}, ...tabs.map(([k, t]) => el("button", {class: pg.lista === k ? "on" : "", onclick: () => { pg.lista = k; refrescar(); }}, t))));
   listas.append(editorLista(pg.lista));
@@ -1430,15 +1509,7 @@ function editorLista(k) {
       el("button", {class: "btn prim", onclick: () => guardarMapeos({p1p4: [...new Set(ta.value.split(/[\s,;]+/).map(x => parseInt(x)).filter(x => x > 0))]})}, "Guardar P1 & P4"));
     return box;
   }
-  if (k === "objextra") {
-    const meses = [sumarMes(D.mesActual, -1), D.mesActual, sumarMes(D.mesActual, 1)];
-    const ex = D.mapeos.objExtra || {};
-    const inps = meses.map(m => ({m, vin: el("input", {class: "inp", type: "number", step: "any", value: ex[m]?.VINOS ?? ""}), mk: el("input", {class: "inp", type: "number", step: "any", value: ex[m]?.MKTPLACE ?? ""})}));
-    box.append(el("div", {class: "nota"}, "Objetivo de toda la empresa para la página Avance diario. El resto de los objetivos (CVZ CMQ, PREMIUM, UNG, AGUAS, LATONES, TOP…) se cargan en el planificador, AJUSTES → Objetivos del mes."),
-      tablaSimple(["Mes", "VINOS (HL)", "MKTPLACE ($ netos)"], inps.map(x => [mesTxtLargo(x.m), x.vin, x.mk]), 200),
-      el("button", {class: "btn prim", onclick: () => { const o = {...ex}; inps.forEach(x => { o[x.m] = {VINOS: +x.vin.value || 0, MKTPLACE: +x.mk.value || 0}; }); guardarMapeos({objExtra: o}); }}, "Guardar objetivos"));
-    return box;
-  }
+  if (k === "objextra") return editorObjetivos(box);
   if (k === "dias") {
     const meses = [sumarMes(D.mesActual, -1), D.mesActual, sumarMes(D.mesActual, 1), sumarMes(D.mesActual, 2)];
     const dsem = ["dom", "lun", "mar", "mié", "jue", "vie", "sáb"];
@@ -1521,7 +1592,43 @@ function refrescar(refiltrar = false) {
   const main = $("#main"); main.innerHTML = "";
   const t0 = performance.now();
   main.append(PAGINAS[PAG].r(MES));
+  columnasAjustables(main);
   console.log(`página ${PAG}: ${Math.round(performance.now() - t0)} ms`);
+}
+// Arrastrar el borde derecho del título de una columna cambia su ancho; doble clic lo vuelve al automático.
+let ANCHOS = {}; try { ANCHOS = JSON.parse(localStorage.getItem("tablero_anchos") || "{}"); } catch {}
+function guardarAnchos() { try { localStorage.setItem("tablero_anchos", JSON.stringify(ANCHOS)); } catch {} }
+function anchoColumna(tabla, j, w) {
+  const th = tabla.tHead.rows[0].cells[j];
+  const celdas = [th, ...[...tabla.querySelectorAll("tbody tr, tfoot tr")].map(r => r.cells.length > 1 ? r.cells[j] : null).filter(Boolean)];
+  for (const c of celdas) {
+    if (w) { c.style.width = c.style.minWidth = c.style.maxWidth = w + "px"; c.classList.add("ancho"); }
+    else { c.style.width = c.style.minWidth = c.style.maxWidth = ""; c.classList.remove("ancho"); }
+  }
+}
+function columnasAjustables(raiz) {
+  raiz.querySelectorAll("table.tt").forEach((tabla, ti) => {
+    if (!tabla.tHead || !tabla.tHead.rows.length) return;
+    const ths = [...tabla.tHead.rows[0].cells];
+    const clave = j => `${PAG}|${ti}|${ths.length}|${j}`;
+    ths.forEach((th, j) => {
+      if (ANCHOS[clave(j)]) anchoColumna(tabla, j, ANCHOS[clave(j)]);
+      const h = el("span", {class: "rz", title: "Arrastrá para cambiar el ancho · doble clic: automático"});
+      h.addEventListener("click", e => e.stopPropagation());
+      h.addEventListener("dblclick", e => { e.stopPropagation(); delete ANCHOS[clave(j)]; guardarAnchos(); anchoColumna(tabla, j, 0); });
+      h.addEventListener("mousedown", e => {
+        e.preventDefault(); e.stopPropagation();
+        const x0 = e.clientX, w0 = th.getBoundingClientRect().width; h.classList.add("on");
+        const mover = ev => anchoColumna(tabla, j, Math.max(40, Math.round(w0 + ev.clientX - x0)));
+        const soltar = () => { document.removeEventListener("mousemove", mover); document.removeEventListener("mouseup", soltar); h.classList.remove("on");
+          ANCHOS[clave(j)] = Math.round(th.getBoundingClientRect().width); guardarAnchos();
+          th._rz = Date.now(); };
+        document.addEventListener("mousemove", mover); document.addEventListener("mouseup", soltar);
+      });
+      th.addEventListener("click", ev => { if (Date.now() - (th._rz || 0) < 400) ev.stopImmediatePropagation(); }, true);   // soltar no ordena la tabla
+      th.append(h);
+    });
+  });
 }
 function iniciar(docs, origen, extra = {}) {
   armarModelo(docs);
