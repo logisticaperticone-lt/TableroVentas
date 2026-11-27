@@ -310,9 +310,24 @@ function canalPorRegla(sub) {
 const CANALES = ["K+T", "REF", "AS", "MAY", "OTROS"];
 const SEGMENTOS = ["CORE", "PREMIUM", "VALUE", "NO APLICABLE"];
 
+// Firestore no acepta listas dentro de listas: en Firebase cada fila se guarda como objeto
+const FORMATO_FILAS = {marcas: ["n", "a", "s"], supervisores: ["v", "s"], canales: ["s", "c"], dias: ["d", "v"]};
+function desdeFirestore(mp) {
+  const out = {...(mp || {})};
+  for (const [k, campos] of Object.entries(FORMATO_FILAS))
+    if (Array.isArray(out[k])) out[k] = out[k].map(r => Array.isArray(r) ? r : campos.map(c => r?.[c] ?? ""));
+  return out;
+}
+function aFirestore(parcial) {
+  const out = {...parcial};
+  for (const [k, campos] of Object.entries(FORMATO_FILAS))
+    if (Array.isArray(out[k])) out[k] = out[k].map(r => Object.fromEntries(campos.map((c, i) => [c, r[i] ?? ""])));
+  return out;
+}
+
 // Aplica las listas de AJUSTES (marcas agrupadas, supervisores, canales, TOP, P1&P4, días)
 function aplicarMapeos(mp) {
-  mp = mp || {};
+  mp = desdeFirestore(mp);
   D.mapeos = {marcas: mp.marcas || [], supervisores: mp.supervisores || [], canales: mp.canales || [], top: mp.top || [], p1p4: mp.p1p4 || [], dias: mp.dias || []};
   const mMarca = new Map(D.mapeos.marcas.map(r => [norm(r[0]), r])), mSup = new Map(D.mapeos.supervisores.filter(r => r[1]).map(r => [norm(r[0]), r[1]]));
   const mCanal = new Map(D.mapeos.canales.filter(r => r[1]).map(r => [norm(r[0]), r[1]]));
@@ -869,7 +884,7 @@ function mostrarAviso(t, tipo) {
 }
 async function guardarMapeos(parcial) {
   const nuevo = {...D.mapeos, ...parcial};
-  if (await guardarConfig("mapeos", parcial)) { aplicarMapeos(nuevo); aplicarFiltros(); refrescar(); }
+  if (await guardarConfig("mapeos", aFirestore(parcial))) { aplicarMapeos(nuevo); aplicarFiltros(); refrescar(); }
 }
 // suma de HL de los últimos meses por lo que devuelva fn (para ordenar los pendientes por importancia)
 function hlUltimos(nMeses, fnA, fnC) {
