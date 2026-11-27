@@ -1066,7 +1066,7 @@ function segmentosDe(md, cal, un) {
     const s = String(info.segmento || "").replace(/\s+/g, "").toUpperCase();
     if (s === "PREMIUM") r.push("PREMIUM");
     if (s === "CORE+VALUE") r.push("CORE + VALUE");
-    if (info.esTop && un === 3) r.push("TOP");
+    if (info.esTop) r.push("TOP");
     if (info.esBc) r.push("BALANCED CHOICES");
   }
   if (un === 3 && D.topCal && D.topCal.has(cal) && !r.includes("TOP")) r.push("TOP");   // Vol TOP = UNG en calibres TOP (Ajustes → Calibres TOP)
