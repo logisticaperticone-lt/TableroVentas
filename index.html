@@ -103,7 +103,16 @@ table.tt{border-collapse:separate;border-spacing:0;width:100%;font-variant-numer
 .tt tr.total td{font-weight:700;background:#eef0f3;position:sticky;bottom:0;border-top:2px solid var(--brand)}
 .tt .tg{display:inline-block;width:14px;color:var(--ink2);cursor:pointer}
 .tt .grp{border-left:1px solid var(--line)}
-.up{color:var(--up)} .down{color:var(--down)}
+.up{color:var(--up);font-weight:600} .down{color:var(--down);font-weight:600}
+.v.up,.v.down{font-weight:700}
+.sem-gris{background:#f1f2f4;color:#555;border-color:#dcdfe4}
+.tt td.cl{cursor:pointer}
+.tt td.cl:hover{text-decoration:underline;text-decoration-color:var(--accent)}
+.tt tr.sel td{background:#fff1e3!important;box-shadow:inset 0 1px 0 #f5c08e,inset 0 -1px 0 #f5c08e}
+.tt tr.sel td:first-child{box-shadow:inset 3px 0 0 var(--accent),inset 0 1px 0 #f5c08e,inset 0 -1px 0 #f5c08e}
+.cruce{display:flex;flex-wrap:wrap;gap:6px;align-items:center;background:#fff7ef;border:1px solid #f5c08e;border-radius:8px;padding:6px 10px;margin-bottom:12px;font-size:12.5px}
+.cruce .chip{background:#fff;border:1px solid #f0b47a;border-radius:12px;padding:1px 9px}
+.cruce button{margin-left:auto;border:1px solid #d5d9e0;background:#fff;border-radius:6px;padding:2px 10px;cursor:pointer}
 .sem{display:inline-block;border-radius:6px;padding:1px 7px;font-weight:700;border:1px solid transparent;font-size:12px}
 .sem-rojo{background:#fbe1e1;color:#9b1c1c;border-color:#f0b4b4} .sem-amarillo{background:#fff3d0;color:#7a5b00;border-color:#ecd27a}
 .sem-verde{background:#dff3e8;color:#11663a;border-color:#9fd6b6} .sem-azul{background:#dbeafe;color:#1d4ed8;border-color:#93c5fd}
@@ -297,7 +306,7 @@ function armarModelo(docs) {
   const artIdx = new Map(A.map((a, i) => [a.cod, i]));
   // clientes
   const C = b.cli.map(r => ({cod: r[0], razon: r[1], supChess: r[2] || "", vend: r[3] || "(sin vendedor)",
-                             sub: r[4] || "(sin subcanal)", loc: r[5] || "(sin localidad)", anulado: r[6] ? "SI" : "NO", dias: r[7] || "(sin día)"}));
+                             sub: r[4] || "(sin subcanal)", loc: r[5] || "(sin localidad)", anulado: r[6] ? "SI" : "NO", dias: r[7] || "(sin día)", pv: +r[8] || 0}));
   const cliIdx = new Map(C.map((c, i) => [c.cod, i]));
   const M = {};
   for (const [k, d] of Object.entries(docs)) {
@@ -369,6 +378,7 @@ function aplicarMapeos(mp) {
   const mMarca = new Map(D.mapeos.marcas.map(r => [norm(r[0]), r])), mSup = new Map(D.mapeos.supervisores.filter(r => r[1]).map(r => [norm(r[0]), r[1]]));
   const mCanal = new Map(D.mapeos.canales.filter(r => r[1]).map(r => [norm(r[0]), r[1]]));
   const top = new Set(D.mapeos.top.map(Number)), p1 = new Set(D.mapeos.p1p4.map(Number));
+  D.topCal = top; D.segCache = new Map();
   D.diasOverride = new Map(D.mapeos.dias.map(r => [r[0], +r[1]]));
   for (const a of D.A) {
     const m = mMarca.get(norm(a.marcaDs));
@@ -427,12 +437,53 @@ const SEL = {};          // k -> Set de valores elegidos
 let MES = null;          // mes elegido
 let cliOk, artOk;
 
+let cliBase, artBase;
 function aplicarFiltros() {
-  cliOk = new Uint8Array(D.C.length); artOk = new Uint8Array(D.A.length);
+  cliBase = new Uint8Array(D.C.length); artBase = new Uint8Array(D.A.length);
   const fc = FILTROS.filter(f => f.src === "c" && SEL[f.k]?.size), fa = FILTROS.filter(f => f.src === "a" && SEL[f.k]?.size);
-  D.C.forEach((c, i) => { cliOk[i] = fc.every(f => SEL[f.k].has(f.get(c))) ? 1 : 0; });
-  D.A.forEach((a, i) => { artOk[i] = fa.every(f => SEL[f.k].has(f.get(a))) ? 1 : 0; });
+  D.C.forEach((c, i) => { cliBase[i] = fc.every(f => SEL[f.k].has(f.get(c))) ? 1 : 0; });
+  D.A.forEach((a, i) => { artBase[i] = fa.every(f => SEL[f.k].has(f.get(a))) ? 1 : 0; });
+  aplicarCruce(null);
 }
+
+// ---------- Selección cruzada (como en Power BI): clic en una fila de una tabla filtra las OTRAS tablas
+// de la página; Ctrl+clic suma filas (de la misma tabla = "o"; de otra tabla = "y").
+const CRUCE = {};          // página -> Map(idTabla -> [camino, ...]); camino = [[dim, valor], ...]
+const cruceDe = () => CRUCE[PAG] || (CRUCE[PAG] = new Map());
+function aplicarCruce(excluir) {
+  cliOk = cliBase.slice(); artOk = artBase.slice();
+  for (const [id, caminos] of cruceDe()) {
+    if (id === excluir || !caminos.length) continue;
+    const pc = caminos.map(cm => cm.filter(([d]) => DIM[d].src === "c")), pa = caminos.map(cm => cm.filter(([d]) => DIM[d].src === "a"));
+    if (pc.every(x => x.length)) D.C.forEach((c, i) => { if (cliOk[i] && !pc.some(cm => cm.every(([d, v]) => DIM[d].get(i) === v))) cliOk[i] = 0; });
+    if (pa.every(x => x.length)) D.A.forEach((a, i) => { if (artOk[i] && !pa.some(cm => cm.every(([d, v]) => DIM[d].get(i) === v))) artOk[i] = 0; });
+  }
+}
+const claveCamino = cm => cm.map(x => x.join("=")).join("|");
+function seleccionar(id, camino, sumar) {
+  const cr = cruceDe(), actual = cr.get(id) || [], k = claveCamino(camino);
+  const ya = actual.some(cm => claveCamino(cm) === k);
+  if (sumar) {
+    const nuevo = ya ? actual.filter(cm => claveCamino(cm) !== k) : [...actual, camino];
+    nuevo.length ? cr.set(id, nuevo) : cr.delete(id);
+  } else if (ya && actual.length === 1 && cr.size === 1) cr.clear();       // clic otra vez en lo mismo: quita
+  else { cr.clear(); cr.set(id, [camino]); }
+  refrescar();
+}
+function barraCruce() {
+  const cr = cruceDe(); if (!cr.size) return null;
+  const partes = [];
+  for (const cams of cr.values()) partes.push(cams.map(cm => cm.map(([d, v]) => `${DIM[d].t}: ${v}`).join(" › ")).join(" o "));
+  return el("div", {class: "cruce"}, el("b", {}, "Selección:"), ...partes.flatMap((t, i) => [i ? el("span", {}, "y") : null, el("span", {class: "chip"}, t)]).filter(Boolean),
+    el("span", {class: "nota", style: "margin:0 0 0 8px"}, "Clic en una fila filtra las otras tablas · Ctrl+clic suma"),
+    el("button", {onclick: () => { cr.clear(); refrescar(); }}, "✕ Quitar selección"));
+}
+// arma una tabla aplicando la selección de las OTRAS tablas (la propia solo se resalta)
+function tablaC(titulo, sub, armar, opts = {}) {
+  aplicarCruce(titulo); const def = armar(); aplicarCruce(null);
+  return tablaUI(titulo, sub, def, {...opts, id: titulo});
+}
+
 
 function opciones(f) {
   const set = new Set();
@@ -528,7 +579,7 @@ function arbol(niveles, init) {
     for (let l = 0; l < niveles.length; l++) {
       const k = keyOf(niveles[l], c, a);
       let h = n.kids.get(k);
-      if (!h) { h = {label: k, kids: new Map(), acc: init(), nivel: l}; n.kids.set(k, h); }
+      if (!h) { h = {label: k, kids: new Map(), acc: init(), nivel: l, padre: n}; n.kids.set(k, h); }
       out.push(h); n = h;
     }
     return out;
@@ -545,7 +596,7 @@ function tablaHL(niveles, mes) {
   return {raiz: T.raiz, vals, cols: [
     {t: "HL LY", f: fHL, sub: mesTxt(per[0])}, {t: "HL LM", f: fHL, sub: mesTxt(per[1])}, {t: "HL AM", f: fHL, sub: mesTxt(per[2])},
     {t: fac !== 1 ? "Tendencia" : "Venta", f: fHL}, {t: "Var % LY", f: fVarPct, cls: clsVar}, {t: "Var % LM", f: fVarPct, cls: clsVar}],
-    vacio: acc => !acc[0] && !acc[1] && !acc[2], orden: 2};
+    vacio: acc => !acc[0] && !acc[1] && !acc[2], orden: 2, niveles};
 }
 function factorTendencia(mes) {
   if (mes !== D.mesActual) return 1;
@@ -572,7 +623,7 @@ function tablaCCC(niveles, mes, tipo) {
   return {raiz: T.raiz, vals, cols: [
     {t: t + " LY", f: fInt, sub: mesTxt(per[0])}, {t: t + " LM", f: fInt, sub: mesTxt(per[1])}, {t: t + " AM", f: fInt, sub: mesTxt(per[2])},
     {t: "Var AM-LY", f: fVar, cls: clsVar}, {t: "Var AM-LM", f: fVar, cls: clsVar}],
-    vacio: acc => tipo === "bd" ? !acc[0] && !acc[1] && !acc[2] : !acc[0].size && !acc[1].size && !acc[2].size, orden: 2};
+    vacio: acc => tipo === "bd" ? !acc[0] && !acc[1] && !acc[2] : !acc[0].size && !acc[1].size && !acc[2].size, orden: 2, niveles};
 }
 
 // ---- KPIs con objetivos (filas Supervisor > Vendedor > Cliente)
@@ -620,7 +671,7 @@ function tablaKPI(kpis, conBD, mes) {
     });
     return out;
   };
-  return {raiz: T.raiz, vals, cols, vacio: acc => acc.n === 0, orden: 0, conNodo: true};
+  return {raiz: T.raiz, vals, cols, vacio: acc => acc.n === 0, orden: 0, conNodo: true, niveles: ["sup", "vend", "cli"]};
 }
 
 // ---- CNC: clientes activos que no compraron
@@ -639,7 +690,7 @@ function tablaCNC(claves, mes) {
     for (const n of T.nodos(c, 0)) { for (let j = 0; j < defs.length; j++) if (!r || r[j] <= 0) n.acc.k[j]++; n.acc.n++; }
   });
   return {raiz: T.raiz, vals: acc => [acc.n, ...acc.k], cols: [{t: "Clientes", f: fIntZ}, ...claves.map(k => ({t: k, f: fInt, cls: () => "cnc"}))],
-          vacio: acc => acc.n === 0, orden: 1, hojaFmt: (v, j) => j === 0 ? "" : v ? "✕" : ""};
+          vacio: acc => acc.n === 0, orden: 1, hojaFmt: (v, j) => j === 0 ? "" : v ? "✕" : "", niveles: ["sup", "vend", "cli"]};
 }
 
 // ---- P1&P4 VALUE: CCC Quilmes 1890 por calibre
@@ -656,14 +707,14 @@ function tablaP1P4(mes) {
   const T = arbol(["sup", "vend", "cli"], () => new Float64Array(lista.length + 1));
   for (const [c, r] of porCli) for (const n of T.nodos(c, 0)) for (let j = 0; j <= lista.length; j++) if (r[j] > 0) n.acc[j]++;
   return {raiz: T.raiz, vals: acc => [...acc], cols: [...lista.map(l => ({t: l, f: fInt})), {t: "Total", f: fInt, grp: true}],
-          vacio: acc => !acc[lista.length], orden: lista.length};
+          vacio: acc => !acc[lista.length], orden: lista.length, niveles: ["sup", "vend", "cli"]};
 }
 
 // ---- evolución mensual HL
 function tablaEvol(niveles, meses) {
   const T = arbol(niveles, () => new Float64Array(meses.length));
   meses.forEach((m, j) => scan(m, (c, a, h) => { for (const n of T.nodos(c, a)) n.acc[j] += h; }));
-  return {raiz: T.raiz, vals: acc => [...acc], cols: meses.map(m => ({t: mesTxt(m), f: fHL})), vacio: acc => !acc.some(v => Math.abs(v) > 0.05), orden: meses.length - 1};
+  return {raiz: T.raiz, vals: acc => [...acc], cols: meses.map(m => ({t: mesTxt(m), f: fHL})), vacio: acc => !acc.some(v => Math.abs(v) > 0.05), orden: meses.length - 1, niveles};
 }
 
 // ---- distribución: palets / bultos / HL
@@ -673,16 +724,23 @@ function tablaDistri(mes) {
     const ar = D.A[a]; const bu = ar.hlBulto ? h / ar.hlBulto : 0; const pa = ar.bxp ? bu / ar.bxp : 0;
     for (const n of T.nodos(c, a)) { n.acc[0] += pa; n.acc[1] += bu; n.acc[2] += h; }
   });
-  return {raiz: T.raiz, vals: acc => acc, cols: [{t: "Pallets", f: v => fHL(v)}, {t: "Bultos", f: fInt}, {t: "HL", f: fHL}], vacio: acc => !acc[2] && !acc[1], orden: 2};
+  return {raiz: T.raiz, vals: acc => acc, cols: [{t: "Pallets", f: v => fHL(v)}, {t: "Bultos", f: fInt}, {t: "HL", f: fHL}], vacio: acc => !acc[2] && !acc[1], orden: 2, niveles: ["un", "cli", "art"]};
 }
 
 // ============================================================================ tabla en pantalla
+const ESTADO_TABLAS = {};
+const claveNodo = n => n.nivel < 0 ? "" : claveNodo(n.padre) + "\u0001" + n.label;
+function caminoNodo(n, niveles) { const out = []; for (let x = n; x && x.nivel >= 0; x = x.padre) out.unshift([niveles[x.nivel], x.label]); return out; }
 function tablaUI(titulo, sub, def, opts = {}) {
   const card = el("div", {class: "card"});
-  const estado = {orden: def.orden ?? 0, asc: false, abiertos: new Set(), limite: opts.limite || 300, buscar: ""};
+  const idE = PAG + "|" + (opts.id || titulo);
+  const previo = opts.id ? ESTADO_TABLAS[idE] : null;
+  const estado = {orden: def.orden ?? 0, asc: false, abiertos: new Set(), limite: opts.limite || 300, buscar: "", ...(previo || {})};
+  if (opts.id) ESTADO_TABLAS[idE] = estado;
+  const selec = opts.id && def.niveles ? new Set((cruceDe().get(opts.id) || []).map(claveCamino)) : null;
   const tw = el("div", {class: "tw", style: opts.alto ? `max-height:${opts.alto}px` : ""});
   const tools = el("div", {class: "tools"});
-  if (opts.buscar) tools.append(el("input", {class: "buscar-t", type: "search", placeholder: "Buscar…", oninput: e => { estado.buscar = norm(e.target.value); pintar(); }}));
+  if (opts.buscar) tools.append(el("input", {class: "buscar-t", type: "search", placeholder: "Buscar…", value: estado.buscarTxt || "", oninput: e => { estado.buscarTxt = e.target.value; estado.buscar = norm(e.target.value); pintar(); }}));
   tools.append(el("button", {onclick: () => { expandirTodo(def.raiz, estado.abiertos, !estado.todo); estado.todo = !estado.todo; pintar(); }, title: "Abrir / cerrar todos los niveles"}, "± niveles"));
   tools.append(el("button", {onclick: () => exportar(titulo, def)}, "Excel"));
   card.append(el("h3", {}, titulo, sub ? el("span", {class: "sub"}, sub) : null, tools));
@@ -709,10 +767,17 @@ function tablaUI(titulo, sub, def, opts = {}) {
         if (filas >= estado.limite) return;
         filas++;
         const tieneKids = h.kids.size > 0;
-        const abierto = estado.abiertos.has(h) || (estado.buscar && tieneKids);
+        const kn = claveNodo(h);
+        const abierto = estado.abiertos.has(kn) || (estado.buscar && tieneKids);
         const v = valsDe(h);
-        const tg = tieneKids ? el("span", {class: "tg", onclick: () => { abierto ? estado.abiertos.delete(h) : estado.abiertos.add(h); pintar(); }}, abierto ? "▾" : "▸") : el("span", {class: "tg"}, "");
-        const tr = el("tr", {class: "l" + h.nivel}, el("td", {title: h.label}, tg, h.label));
+        const tg = tieneKids ? el("span", {class: "tg", onclick: e => { e.stopPropagation(); abierto ? estado.abiertos.delete(kn) : estado.abiertos.add(kn); pintar(); }}, abierto ? "▾" : "▸") : el("span", {class: "tg"}, "");
+        let td1, esSel = false;
+        if (selec) {
+          const cm = caminoNodo(h, def.niveles); esSel = selec.has(claveCamino(cm));
+          td1 = el("td", {class: "cl", title: h.label + "\nClic: ver las otras tablas solo con esto · Ctrl+clic: sumar a la selección",
+                          onclick: e => seleccionar(opts.id, cm, e.ctrlKey || e.metaKey)}, tg, h.label);
+        } else td1 = el("td", {title: h.label}, tg, h.label);
+        const tr = el("tr", {class: "l" + h.nivel + (esSel ? " sel" : "")}, td1);
         def.cols.forEach((c, j) => {
           const val = v[j];
           const txt = def.hojaFmt && h.nivel === hojaNivel ? def.hojaFmt(val, j) : c.f(val);
@@ -734,13 +799,13 @@ function tablaUI(titulo, sub, def, opts = {}) {
     if (filas >= estado.limite) tw.append(el("button", {class: "btn mas", onclick: () => { estado.limite += 500; pintar(); }}, "Mostrar más filas"));
   }
   function ordenar(j) { if (estado.orden === j) estado.asc = !estado.asc; else { estado.orden = j; estado.asc = j === -1; } pintar(); }
-  if (opts.abrirPrimerNivel) expandirTodo(def.raiz, estado.abiertos, true, 1);
+  if (opts.abrirPrimerNivel && !previo) expandirTodo(def.raiz, estado.abiertos, true, 1);
   pintar();
   return card;
 }
 function maxNivel(n) { let m = n.nivel; for (const h of n.kids.values()) m = Math.max(m, maxNivel(h)); return m; }
 function expandirTodo(n, set, abrir, hasta = 99) {
-  for (const h of n.kids.values()) { if (h.kids.size && h.nivel < hasta) { abrir ? set.add(h) : set.delete(h); expandirTodo(h, set, abrir, hasta); } }
+  for (const h of n.kids.values()) { if (h.kids.size && h.nivel < hasta) { const k = claveNodo(h); abrir ? set.add(k) : set.delete(k); expandirTodo(h, set, abrir, hasta); } }
 }
 function exportar(titulo, def) {
   const filas = [];
@@ -811,13 +876,14 @@ function tiles(mes) {
   const c = tablaCCC([], mes, "ccc"); const vc = c.vals(c.raiz.acc);
   const fac = factorTendencia(mes);
   const {tot, trans} = diasMes(mes);
-  const tile = (tt, vv, d, cls = "") => el("div", {class: "tile"}, el("div", {class: "t"}, tt), el("div", {class: "v"}, vv), el("div", {class: "d " + cls}, d));
+  const tile = (tt, vv, d, cls = "") => el("div", {class: "tile"}, el("div", {class: "t"}, tt), el("div", {class: "v " + cls}, vv), el("div", {class: "d"}, d));
+  const dif = (v, txt) => el("span", {class: clsVar(v)}, fVar(v) + " " + txt);
   return el("div", {class: "tiles"},
     tile("HL " + mesTxt(mes), nf1.format(v[2]), mes === D.mesActual ? `${nf1.format(trans)} de ${nf1.format(tot)} días hábiles` : "mes cerrado"),
     tile(fac !== 1 ? "Tendencia" : "Venta del mes", nf1.format(v[3]), fac !== 1 ? "proyección al cierre" : ""),
     tile("vs mismo mes año pasado", fVarPct(v[4]), `LY: ${nf1.format(v[0])} HL`, clsVar(v[4])),
     tile("vs mes anterior", fVarPct(v[5]), `LM: ${nf1.format(v[1])} HL`, clsVar(v[5])),
-    tile("Clientes con compra", nf0.format(vc[2]), `${fVar(vc[4])} vs LM · ${fVar(vc[3])} vs LY`),
+    tile("Clientes con compra", nf0.format(vc[2]), el("span", {}, dif(vc[4], "vs LM"), " · ", dif(vc[3], "vs LY"))),
   );
 }
 function mixTiles(mes) {
@@ -833,13 +899,13 @@ const PAGINAS = {
     const p = el("div");
     p.append(tiles(mes));
     p.append(el("div", {class: "grid"},
-      tablaUI("KPIs Cerveza", "clientes con compra y % del objetivo", tablaKPI(KPIS_CZA, false, mes), {col1: "Supervisor / Vendedor / Cliente", buscar: true}),
-      tablaUI("KPIs UNG", "", tablaKPI(["CCC UNG", "CCC H2OH", "CCC PEPSI BLACK"], true, mes), {col1: "Supervisor / Vendedor / Cliente", buscar: true}),
+      tablaC("KPIs Cerveza", "clientes con compra y % del objetivo", () => tablaKPI(KPIS_CZA, false, mes), {col1: "Supervisor / Vendedor / Cliente", buscar: true}),
+      tablaC("KPIs UNG", "", () => tablaKPI(["CCC UNG", "CCC H2OH", "CCC PEPSI BLACK"], true, mes), {col1: "Supervisor / Vendedor / Cliente", buscar: true}),
     ));
     const g2 = el("div", {class: "grid g2", style: "margin-top:14px"});
-    g2.append(tablaUI("CCC P1 & P4 VALUE", "Quilmes 1890 por calibre", tablaP1P4(mes), {col1: "Supervisor / Vendedor / Cliente", buscar: true}));
+    g2.append(tablaC("CCC P1 & P4 VALUE", "Quilmes 1890 por calibre", () => tablaP1P4(mes), {col1: "Supervisor / Vendedor / Cliente", buscar: true}));
     const meses = D.meses.filter(m => m <= mes && m > sumarMes(mes, -12));
-    g2.append(tablaUI("CCC por mes y unidad de negocio", "últimos 12 meses", tablaCCCMes(meses), {col1: "Unidad de negocio", alto: 380}));
+    g2.append(tablaC("CCC por mes y unidad de negocio", "últimos 12 meses", () => tablaCCCMes(meses), {col1: "Unidad de negocio", alto: 380}));
     p.append(g2);
     return p;
   }},
@@ -848,12 +914,12 @@ const PAGINAS = {
     p.append(el("div", {class: "tiles"}, ...tiles(mes).children, ...mixTiles(mes)));
     const nota = mes === D.mesActual ? "En el mes en curso, las variaciones comparan la tendencia (proyección al cierre) contra LY y LM." : "";
     p.append(el("div", {class: "grid g2"},
-      tablaUI("Supervisor · Vendedor", "", tablaHL(["sup", "vend"], mes), {col1: "Supervisor / Vendedor", nota}),
-      tablaUI("Unidad de negocio · Marca", "", tablaHL(["un", "magr", "marca"], mes), {col1: "UN / Marca agrupada / Marca", abrirPrimerNivel: true}),
-      tablaUI("Canal · Subcanal", "", tablaHL(["canal", "sub"], mes), {col1: "Canal / Subcanal"}),
-      tablaUI("Calibre", "", tablaHL(["cal"], mes), {col1: "Calibre"}),
+      tablaC("Supervisor · Vendedor", "", () => tablaHL(["sup", "vend"], mes), {col1: "Supervisor / Vendedor", nota}),
+      tablaC("Unidad de negocio · Marca", "", () => tablaHL(["un", "magr", "marca"], mes), {col1: "UN / Marca agrupada / Marca", abrirPrimerNivel: true}),
+      tablaC("Canal · Subcanal", "", () => tablaHL(["canal", "sub"], mes), {col1: "Canal / Subcanal"}),
+      tablaC("Calibre", "", () => tablaHL(["cal"], mes), {col1: "Calibre"}),
     ));
-    p.append(el("div", {style: "margin-top:14px"}, tablaUI("Clientes", "", tablaHL(["cli"], mes), {col1: "Cliente", buscar: true, limite: 200})));
+    p.append(el("div", {style: "margin-top:14px"}, tablaC("Clientes", "", () => tablaHL(["cli"], mes), {col1: "Cliente", buscar: true, limite: 200})));
     return p;
   }},
   kpis: {t: "Performance KPIs", tipo: "ccc", r(mes) {
@@ -865,12 +931,12 @@ const PAGINAS = {
       el("span", {class: "nota", style: "margin:0"}, pg.tipo === "ccc" ? "Clientes distintos con compra > 0 en el mes." : "Suma por cliente de los artículos distintos comprados en el mes.")));
     const t = pg.tipo;
     p.append(el("div", {class: "grid g2"},
-      tablaUI("Supervisor · Vendedor", "", tablaCCC(["sup", "vend"], mes, t), {col1: "Supervisor / Vendedor"}),
-      tablaUI("Unidad de negocio · Marca", "", tablaCCC(["un", "magr", "marca"], mes, t), {col1: "UN / Marca agrupada / Marca", abrirPrimerNivel: true}),
-      tablaUI("Canal · Subcanal", "", tablaCCC(["canal", "sub"], mes, t), {col1: "Canal / Subcanal"}),
-      tablaUI("Calibre", "", tablaCCC(["cal"], mes, t), {col1: "Calibre"}),
+      tablaC("Supervisor · Vendedor", "", () => tablaCCC(["sup", "vend"], mes, t), {col1: "Supervisor / Vendedor"}),
+      tablaC("Unidad de negocio · Marca", "", () => tablaCCC(["un", "magr", "marca"], mes, t), {col1: "UN / Marca agrupada / Marca", abrirPrimerNivel: true}),
+      tablaC("Canal · Subcanal", "", () => tablaCCC(["canal", "sub"], mes, t), {col1: "Canal / Subcanal"}),
+      tablaC("Calibre", "", () => tablaCCC(["cal"], mes, t), {col1: "Calibre"}),
     ));
-    p.append(el("div", {style: "margin-top:14px"}, tablaUI("Clientes", "", tablaCCC(["cli"], mes, t), {col1: "Cliente", buscar: true, limite: 200})));
+    p.append(el("div", {style: "margin-top:14px"}, tablaC("Clientes", "", () => tablaCCC(["cli"], mes, t), {col1: "Cliente", buscar: true, limite: 200})));
     return p;
   }},
   evolucion: {t: "Evolución temporal", r(mes) {
@@ -878,25 +944,25 @@ const PAGINAS = {
     const p = el("div");
     p.append(el("div", {class: "card", style: "margin-bottom:14px"}, el("h3", {}, "HL por mes y marca agrupada", el("span", {class: "sub"}, "las 7 marcas con más volumen; el resto en “Otras”")), graficoEvol(meses)));
     p.append(el("div", {class: "grid"},
-      tablaUI("Supervisor · Vendedor", "HL por mes", tablaEvol(["sup", "vend"], meses), {col1: "Supervisor / Vendedor"}),
-      tablaUI("Unidad de negocio · Marca", "HL por mes", tablaEvol(["un", "magr", "marca"], meses), {col1: "UN / Marca agrupada / Marca", abrirPrimerNivel: true}),
-      tablaUI("Canal · Subcanal", "HL por mes", tablaEvol(["canal", "sub"], meses), {col1: "Canal / Subcanal"}),
-      tablaUI("Sabor · Calibre", "HL por mes", tablaEvol(["sabor", "cal"], meses), {col1: "Sabor / Calibre"}),
-      tablaUI("Distribución: pallets, bultos y HL", mesTxtLargo(mes), tablaDistri(mes), {col1: "UN / Cliente / Artículo", buscar: true}),
+      tablaC("Supervisor · Vendedor", "HL por mes", () => tablaEvol(["sup", "vend"], meses), {col1: "Supervisor / Vendedor"}),
+      tablaC("Unidad de negocio · Marca", "HL por mes", () => tablaEvol(["un", "magr", "marca"], meses), {col1: "UN / Marca agrupada / Marca", abrirPrimerNivel: true}),
+      tablaC("Canal · Subcanal", "HL por mes", () => tablaEvol(["canal", "sub"], meses), {col1: "Canal / Subcanal"}),
+      tablaC("Sabor · Calibre", "HL por mes", () => tablaEvol(["sabor", "cal"], meses), {col1: "Sabor / Calibre"}),
+      tablaC("Distribución: pallets, bultos y HL", mesTxtLargo(mes), () => tablaDistri(mes), {col1: "UN / Cliente / Artículo", buscar: true}),
     ));
     return p;
   }},
   objetivos: {t: "Seguimiento objetivos", r(mes) {
     const p = el("div");
     p.append(el("div", {class: "grid"},
-      tablaUI("KPIs Cerveza", "clientes con compra y % del objetivo", tablaKPI(KPIS_CZA, false, mes), {col1: "Supervisor / Vendedor / Cliente", buscar: true}),
-      tablaUI("KPIs UNG", "", tablaKPI(["CCC UNG", "CCC H2OH", "CCC GATORADE", "CCC RED BULL"], true, mes), {col1: "Supervisor / Vendedor / Cliente", buscar: true}),
-      tablaUI("CCC P1 & P4 VALUE", "Quilmes 1890 por calibre", tablaP1P4(mes), {col1: "Supervisor / Vendedor / Cliente", buscar: true}),
+      tablaC("KPIs Cerveza", "clientes con compra y % del objetivo", () => tablaKPI(KPIS_CZA, false, mes), {col1: "Supervisor / Vendedor / Cliente", buscar: true}),
+      tablaC("KPIs UNG", "", () => tablaKPI(["CCC UNG", "CCC H2OH", "CCC GATORADE", "CCC RED BULL"], true, mes), {col1: "Supervisor / Vendedor / Cliente", buscar: true}),
+      tablaC("CCC P1 & P4 VALUE", "Quilmes 1890 por calibre", () => tablaP1P4(mes), {col1: "Supervisor / Vendedor / Cliente", buscar: true}),
     ));
     const nota = "Clientes activos (no anulados) de la cartera filtrada que NO compraron en el mes. En cada cliente, ✕ = no compró.";
     p.append(el("div", {class: "grid g2", style: "margin-top:14px"},
-      tablaUI("CNC · Cerveza", "clientes no compradores", tablaCNC(["CNC CZA", "CNC LATONES", "CNC INNOV CORE", "CNC 0.0", "CNC MICHELOB", "CNC PURE GOLD"], mes), {col1: "Supervisor / Vendedor / Cliente", buscar: true, nota}),
-      tablaUI("CNC · UNG", "clientes no compradores", tablaCNC(["CNC UNG", "CNC GATORADE", "CNC RED BULL", "CNC H2OH"], mes), {col1: "Supervisor / Vendedor / Cliente", buscar: true, nota}),
+      tablaC("CNC · Cerveza", "clientes no compradores", () => tablaCNC(["CNC CZA", "CNC LATONES", "CNC INNOV CORE", "CNC 0.0", "CNC MICHELOB", "CNC PURE GOLD"], mes), {col1: "Supervisor / Vendedor / Cliente", buscar: true, nota}),
+      tablaC("CNC · UNG", "clientes no compradores", () => tablaCNC(["CNC UNG", "CNC GATORADE", "CNC RED BULL", "CNC H2OH"], mes), {col1: "Supervisor / Vendedor / Cliente", buscar: true, nota}),
     ));
     return p;
   }},
@@ -906,7 +972,7 @@ function tablaCCCMes(meses) {
   const T = arbol(["un"], () => meses.map(() => new Map()));
   meses.forEach((m, j) => scan(m, (c, a, h) => { if (UN_EXCLUIR_CCC_MES.includes(D.A[a].unDs) || D.C[c].fantasma) return; for (const n of T.nodos(c, a)) n.acc[j].set(c, (n.acc[j].get(c) || 0) + h); }));
   const cnt = mp => { let k = 0; for (const v of mp.values()) if (v > 0) k++; return k; };
-  return {raiz: T.raiz, vals: acc => acc.map(cnt), cols: meses.map(m => ({t: mesTxt(m), f: fInt})), vacio: acc => !acc.some(mp => mp.size), orden: meses.length - 1};
+  return {raiz: T.raiz, vals: acc => acc.map(cnt), cols: meses.map(m => ({t: mesTxt(m), f: fInt})), vacio: acc => !acc.some(mp => mp.size), orden: meses.length - 1, niveles: ["un"]};
 }
 
 // ============================================================================ PLANIFICADOR (segmentos, objetivos, vendedores)
@@ -982,7 +1048,7 @@ function prepararPlanificador(pl) {
   D.plan = {seg, segMap: new Map(seg.map(m => [normMarca(m.descripcion), m])), diaValor: pl.diaValor || {},
             feriados: new Set(pl.feriados || []), objetivos: pl.objetivos || {mes: "", filas: []},
             vendedores: (pl.vendedores || []).filter(v => v && v.pv != null).map(v => ({...v, pv: +v.pv}))};
-  D.segCache = new Map();
+  D.segCache = new Map(); D._pvNombre = null;
 }
 // Misma regla que el AD del planificador (+ VINOS y MKTPLACE para el Avance diario)
 function segmentosDe(md, cal, un) {
@@ -1000,9 +1066,10 @@ function segmentosDe(md, cal, un) {
     const s = String(info.segmento || "").replace(/\s+/g, "").toUpperCase();
     if (s === "PREMIUM") r.push("PREMIUM");
     if (s === "CORE+VALUE") r.push("CORE + VALUE");
-    if (info.esTop) r.push("TOP");
+    if (info.esTop && un === 3) r.push("TOP");
     if (info.esBc) r.push("BALANCED CHOICES");
   }
+  if (un === 3 && D.topCal && D.topCal.has(cal) && !r.includes("TOP")) r.push("TOP");   // Vol TOP = UNG en calibres TOP (Ajustes → Calibres TOP)
   D.segCache.set(k, r); return r;
 }
 function ddvMes(mes, hasta) { let E = 0, G = 0; for (const d of diasDelMes(mes)) { const v = valorDia(d); G += v; if (d <= hasta) E += v; } return {E, G, F: G - E}; }
@@ -1069,7 +1136,8 @@ function objetivoTotal(seg, mes) {
   return D.plan.vendedores.reduce((t, v) => t + objetivoVend(v, seg, mes), 0);
 }
 function semAvance(p) { if (p == null || !isFinite(p)) return ""; const x = p * 100; return x < 90 ? "sem-rojo" : x < 100 ? "sem-amarillo" : x <= 120 ? "sem-verde" : "sem-azul"; }
-function semVar(p) { if (p == null || !isFinite(p)) return ""; const r = Math.round(p * 100); return r < -10 ? "sem-rojo" : r < 0 ? "sem-amarillo" : "sem-verde"; }
+// comparaciones (vs M-1, vs año anterior): crece = verde, cae = rojo
+function semVar(p) { if (p == null || !isFinite(p)) return ""; const r = Math.round(p * 100); return r > 0 ? "sem-verde" : r < 0 ? "sem-rojo" : "sem-gris"; }
 const fMonto = v => v == null || !isFinite(v) ? "" : "$ " + nf0.format(v);
 const fPctSem = (v, cls) => v == null || !isFinite(v) ? el("span", {class: "nota"}, "-") : el("span", {class: "sem " + cls}, nf1.format(v * 100) + "%");
 const fVarSem = (v, cls) => v == null || !isFinite(v) ? el("span", {class: "nota"}, "-") : el("span", {class: "sem " + cls}, (v >= 0 ? "+" : "") + nf0.format(Math.round(v * 100)) + "%");
@@ -1188,27 +1256,31 @@ PAGINAS.cierre = {t: "Cierre vendedores", sinFiltros: true, seg: "CVZ CMQ", mes:
     for (const s of ss) { if (!SEGMENTOS_AD.includes(s)) continue; const x = a[s] || (a[s] = {r: 0, m1: 0}); if (mes === M) x.r += hl; else x.m1 += hl; }
   });
   const sinM1 = !D.diaMes[prev];
+  // Y-1: mismo mes del año pasado COMPLETO, de los clientes que HOY tiene cada vendedor en su cartera
+  // (así un cambio de zona no ensucia la comparación)
+  const ly = sumarMes(M, -12), lyAcc = volumenCartera(ly), sinY1 = !D.M[ly];
   // vendedores del planificador + los que vendieron y no están en la lista (van a OTROS)
   const vend = D.plan.vendedores.map(v => ({...v, extra: false}));
-  for (const pv of acc.keys()) if (!vend.some(v => v.pv === pv)) vend.push({pv, nombre: pv ? `Vendedor ${pv}` : "(sin vendedor)", sv: "", extra: true});
+  for (const pv of new Set([...acc.keys(), ...lyAcc.keys()])) if (!vend.some(v => v.pv === pv)) vend.push({pv, nombre: pv ? `Vendedor ${pv}` : "(sin vendedor)", sv: "", extra: true});
   for (const v of vend) [v.mesa, v.submesa] = v.extra ? ["OTROS", null] : mesaDe(v.sv);
   // grupos en orden: mesas fijas, supervisores nuevos que aparezcan en el planificador, OTROS
   const otrosSv = [...new Set(vend.map(v => v.mesa).filter(m => m.startsWith("SV:")))].sort();
   const grupos = [...MESAS, ...otrosSv.map(id => ({id, t: "MESA DE " + id.slice(3)})), {id: "OTROS", t: "OTROS / VENDEDOR SIN SUPERVISOR"}];
   const opcionesMesa = [["TODAS", "Todas las mesas"], ...grupos.flatMap(g => [[g.id, g.t.replace("MESA DE ", "Mesa ")], ...(g.sub || []).map(s => [s.id, "   " + s.t])])];
   if (!opcionesMesa.some(o => o[0] === pg.mesa)) pg.mesa = "TODAS";
-  const filaDe = (v, seg) => { const a = (acc.get(v.pv) || {})[seg] || {r: 0, m1: 0}; return {obj: v.extra ? 0 : objetivoVend(v, seg, M), r: a.r, m1: a.m1}; };
+  const filaDe = (v, seg) => { const a = (acc.get(v.pv) || {})[seg] || {r: 0, m1: 0};
+    return {obj: v.extra ? 0 : objetivoVend(v, seg, M), r: a.r, m1: a.m1, y1: (lyAcc.get(v.pv) || {})[seg] || 0}; };
   const calc = x => { const tend = E > 0 ? x.r / E * G : 0;
-    return {...x, tend, av: x.obj ? tend / x.obj : null, vs: x.m1 ? tend / x.m1 - 1 : null, med: E > 0 ? x.r / E : 0, nec: x.obj && enCurso ? (F <= 1 ? x.obj - x.r : (x.obj - x.r) / F) : null}; };
-  const suma = (a, b) => { a.obj += b.obj; a.r += b.r; a.m1 += b.m1; return a; };
-  const cero = () => ({obj: 0, r: 0, m1: 0});
+    return {...x, tend, av: x.obj ? tend / x.obj : null, vs: x.m1 ? tend / x.m1 - 1 : null, vsY: x.y1 ? tend / x.y1 - 1 : null, med: E > 0 ? x.r / E : 0, nec: x.obj && enCurso ? (F <= 1 ? x.obj - x.r : (x.obj - x.r) / F) : null}; };
+  const suma = (a, b) => { a.obj += b.obj; a.r += b.r; a.m1 += b.m1; a.y1 += b.y1; return a; };
+  const cero = () => ({obj: 0, r: 0, m1: 0, y1: 0});
   const tablaSeg = seg => {
     const filas = [], csv = [], tot = cero();
     // filas de vendedores de una lista; devuelve el subtotal (o null si no hay nada)
     const bloque = (lista, etiquetaCsv) => {
       const st = cero();
       const hijos = lista.slice().sort((a, b) => a.pv - b.pv).map(v => { const x = filaDe(v, seg); suma(st, x); return [v, x]; })
-                         .filter(([, x]) => x.obj || Math.abs(x.r) > 0.05 || Math.abs(x.m1) > 0.05);
+                         .filter(([, x]) => x.obj || Math.abs(x.r) > 0.05 || Math.abs(x.m1) > 0.05 || Math.abs(x.y1) > 0.05);
       if (!hijos.length) return null;
       for (const [v, x] of hijos) { const c = calc(x); filas.push(filaCierre(`${v.pv} · ${v.nombre}`, c, "")); csv.push([etiquetaCsv, v.pv, v.nombre, ...valoresCSV(c)]); }
       return st;
@@ -1242,7 +1314,7 @@ PAGINAS.cierre = {t: "Cierre vendedores", sinFiltros: true, seg: "CVZ CMQ", mes:
     const todas = pg.mesa === "TODAS", ct = calc(tot);
     if (todas) csv.push(["", "", "TOTAL EMPRESA", ...valoresCSV(ct)]);
     const t = el("table", {class: "tt cierre"},
-      el("thead", {}, el("tr", {}, el("th", {style: "text-align:left"}, "Vendedor"), ...["Objetivo", "Real", "Avance", enCurso ? "Tend." : "Cierre", "M-1 real", "Vs M-1", "Media real", "Media nec."].map(h => el("th", {}, h)))),
+      el("thead", {}, el("tr", {}, el("th", {style: "text-align:left"}, "Vendedor"), ...["Objetivo", "Real", "Avance", enCurso ? "Tend." : "Cierre", "M-1 real", "Vs M-1", "Y-1", "Vs Y-1", "Media real", "Media nec."].map(h => el("th", {title: h === "Y-1" ? `${mesTxtLargo(ly)} completo, de los clientes que hoy tiene el vendedor en su cartera` : ""}, h)))),
       el("tbody", {}, ...filas), todas ? el("tfoot", {}, filaCierre("TOTAL EMPRESA · LOGÍSTICA TOTAL", ct, "total")) : null);
     return {t, csv};
   };
@@ -1250,7 +1322,7 @@ PAGINAS.cierre = {t: "Cierre vendedores", sinFiltros: true, seg: "CVZ CMQ", mes:
   const segBtns = el("div", {class: "seg"}, ...SEGMENTOS_AD.map(sg => el("button", {class: pg.seg === sg ? "on" : "", onclick: () => { pg.seg = sg; refrescar(); }}, sg)));
   const selMesa = el("select", {onchange: e => { pg.mesa = e.target.value; refrescar(); }});
   opcionesMesa.forEach(([v, t]) => selMesa.append(el("option", {value: v}, t))); selMesa.value = pg.mesa;
-  const head = ["Mesa", "PV", "Vendedor", "Objetivo", "Real", "Avance %", enCurso ? "Tendencia" : "Cierre", "M-1 real", "Vs M-1 %", "Media real", "Media nec."];
+  const head = ["Mesa", "PV", "Vendedor", "Objetivo", "Real", "Avance %", enCurso ? "Tendencia" : "Cierre", "M-1 real", "Vs M-1 %", "Y-1 (cartera actual)", "Vs Y-1 %", "Media real", "Media nec."];
   const {t, csv} = tablaSeg(pg.seg);
   const nomMesa = (opcionesMesa.find(o => o[0] === pg.mesa) || [, ""])[1].trim();
   const sufijo = pg.mesa === "TODAS" ? "" : " - " + nomMesa;
@@ -1258,7 +1330,7 @@ PAGINAS.cierre = {t: "Cierre vendedores", sinFiltros: true, seg: "CVZ CMQ", mes:
   p.append(el("div", {style: "display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px"}, selectorMes(pg),
     el("label", {class: "selmes"}, "Supervisor", selMesa), segBtns));
   p.append(el("div", {class: "nota", style: "margin:0 0 10px"}, `${enCurso ? "Avance al" : "Cierre al"} ${corte.split("-").reverse().join("/")}${enCurso && D.conPedidos ? " (con pedidos)" : ""} · DDV ${nf1.format(E)} de ${nf1.format(G)} · por vendedor del comprobante`
-    + (sinM1 ? ` · sin detalle de ${mesTxtLargo(prev)} para el M-1` : "")));
+    + (sinM1 ? ` · sin detalle de ${mesTxtLargo(prev)} para el M-1` : "") + ` · Y-1 = ${mesTxtLargo(ly)} completo según la cartera actual de cada vendedor` + (sinY1 ? " (sin datos)" : "")));
   p.append(el("div", {class: "card"}, el("h3", {}, `Cierre ${pg.seg}${sufijo}`, el("span", {class: "sub"}, mesTxtLargo(M) + " · HL"),
     el("div", {class: "tools"},
       el("button", {onclick: () => exportarCSV(`Cierre ${pg.seg}${sufijo} ${M}`, head, csv.map(r => r.map((x, i) => i >= 3 ? num4(x) : x)))}, "Excel"),
@@ -1269,11 +1341,33 @@ PAGINAS.cierre = {t: "Cierre vendedores", sinFiltros: true, seg: "CVZ CMQ", mes:
     el("div", {class: "tw", style: "max-height:none"}, t)));
   return p;
 }};
-function filaTitulo(t, cls) { return el("tr", {class: cls}, el("td", {colspan: 9}, t)); }
-function valoresCSV(c) { return [c.obj, c.r, c.av == null ? "" : c.av * 100, c.tend, c.m1, c.vs == null ? "" : c.vs * 100, c.med, c.nec]; }
+function filaTitulo(t, cls) { return el("tr", {class: cls}, el("td", {colspan: 11}, t)); }
+// Vendedor de la cartera actual: número de vendedor de la ruta PRE vigente (Chess). Si el dato todavía
+// no vino (corridas viejas), se busca por nombre contra la lista de vendedores del planificador.
+function pvCartera(c) {
+  if (c.pv) return c.pv;
+  if (!D._pvNombre) {
+    const tok = x => normNombreTok(x);
+    D._pvNombre = new Map(D.plan.vendedores.map(v => [tok(v.nombre), v.pv]));
+  }
+  return c.fantasma ? 0 : D._pvNombre.get(normNombreTok(c.vend)) || 0;
+}
+function normNombreTok(x) { return String(x ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().replace(/[^A-Z0-9 ]/g, " ").split(/\s+/).filter(Boolean).sort().join(" "); }
+// HL de un mes por vendedor de la cartera actual y segmento: Map pv -> {seg: hl}
+function volumenCartera(mes) {
+  const out = new Map(), m = D.M[mes]; if (!m) return out;
+  for (let i = 0; i < m.n; i++) {
+    const c = D.C[m.ci[i]], a = D.A[m.ai[i]], pv = pvCartera(c);
+    let x = out.get(pv); if (!x) { x = {}; out.set(pv, x); }
+    for (const sg of segmentosDe(a.marcaDs, a.cal, a.un)) if (SEGMENTOS_AD.includes(sg)) x[sg] = (x[sg] || 0) + m.hl[i];
+  }
+  return out;
+}
+function valoresCSV(c) { return [c.obj, c.r, c.av == null ? "" : c.av * 100, c.tend, c.m1, c.vs == null ? "" : c.vs * 100, c.y1, c.vsY == null ? "" : c.vsY * 100, c.med, c.nec]; }
 function filaCierre(nombre, c, cls) {
   return el("tr", {class: cls}, el("td", {}, nombre), el("td", {}, c.obj ? fHL(c.obj) : "-"), el("td", {}, fHL(c.r) || "0"),
     el("td", {}, fPctSem(c.av, semAvance(c.av))), el("td", {}, fHL(c.tend)), el("td", {}, fHL(c.m1)), el("td", {}, fVarSem(c.vs, semVar(c.vs))),
+    el("td", {}, fHL(c.y1)), el("td", {}, fVarSem(c.vsY, semVar(c.vsY))),
     el("td", {}, fHL(c.med)), el("td", {}, c.nec == null ? "-" : fHL(c.nec)));
 }
 
@@ -1591,6 +1685,8 @@ function refrescar(refiltrar = false) {
   $("#filtros").classList.toggle("hidden", !!PAGINAS[PAG].sinFiltros);
   const main = $("#main"); main.innerHTML = "";
   const t0 = performance.now();
+  aplicarCruce(null);
+  if (!PAGINAS[PAG].sinFiltros) { const b = barraCruce(); if (b) main.append(b); }
   main.append(PAGINAS[PAG].r(MES));
   columnasAjustables(main);
   console.log(`página ${PAG}: ${Math.round(performance.now() - t0)} ms`);
