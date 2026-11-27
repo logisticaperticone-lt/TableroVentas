@@ -87,6 +87,14 @@ table.tt{border-collapse:separate;border-spacing:0;width:100%;font-variant-numer
 .tt.diario tr.futuro td{color:#b0b4ba}
 .tt.diario tr.nohabil td{background:#fafafa;color:#9aa0a6}
 .tt.cierre tr.sub td{background:#eef0f3;font-weight:700}
+.tt.cierre tr.mesa td{background:#2b2f36;color:#fff;font-weight:700;letter-spacing:.3px}
+.tt.cierre tr.mesa td:first-child{padding-left:8px}
+.tt.cierre tr.submesa td{background:#fff4ea;font-weight:700;color:#7a3e0a}
+.tt.cierre tr.submesa td:first-child{padding-left:14px}
+.tt.cierre tr.sub2 td{background:#f6f7f9;font-weight:700}
+.tt.cierre tr.sub2 td:first-child{padding-left:14px}
+.selmes{display:flex;gap:6px;align-items:center;font-size:13px;color:var(--ink2)}
+.selmes select{padding:4px 8px;border:1px solid #d5d9e0;border-radius:6px;background:#fff;font-weight:600}
 .tt.cierre tr.sub td:first-child{padding-left:8px}
 .tt.cierre td:first-child{padding-left:22px}
 .tt tr.total td{font-weight:700;background:#eef0f3;position:sticky;bottom:0;border-top:2px solid var(--brand)}
@@ -303,7 +311,16 @@ function armarModelo(docs) {
   }
   C.forEach(c => c.label = `${c.cod} - ${c.razon}`);
   D.A = A; D.C = C; D.M = M; D.meses = Object.keys(M).sort();
-  D.diario = docs.diario || null;      // día x vendedor del comprobante x marca x calibre x UN (mes anterior + actual)
+  // día x vendedor del comprobante x marca x calibre x UN: un documento por mes ("dia_AAAA-MM")
+  D.diaMes = {};
+  for (const [k, d] of Object.entries(docs)) if (k.startsWith("dia_") && d && d.filas) D.diaMes[d.mes || k.slice(4)] = d;
+  if (docs.diario && docs.diario.filas) {     // formato viejo (un solo documento con 2 meses)
+    for (const fila of docs.diario.filas) { const m = fila[0].slice(0, 7); if (docs["dia_" + m]) continue;
+      (D.diaMes[m] || (D.diaMes[m] = {mes: m, marcas: docs.diario.marcas || {}, filas: []})).filas.push(fila); }
+  }
+  D.mesesDia = Object.keys(D.diaMes).sort();
+  D.diario = D.mesesDia.length ? true : null;
+  D.objAD = b.objAD || {};
   D.obj = new Map(); D.objVend = new Map();
   for (const [mes, sup, vend, kpi, val] of b.obj || []) {
     if (!D.objVend.has(mes)) D.objVend.set(mes, new Set());
@@ -986,22 +1003,62 @@ function segmentosDe(md, cal, un) {
   D.segCache.set(k, r); return r;
 }
 function ddvMes(mes, hasta) { let E = 0, G = 0; for (const d of diasDelMes(mes)) { const v = valorDia(d); G += v; if (d <= hasta) E += v; } return {E, G, F: G - E}; }
-// Recorre el diario: fn(fecha, pv, segmentos, hl, neto)
-function recorrerDiario(fn) {
-  if (!D.diario) return;
-  const mk = D.diario.marcas || {};
-  for (const [f, pv, mc, cal, un, hl, neto] of D.diario.filas) fn(f, pv, segmentosDe(mk[String(mc)] || "", cal, un), hl, neto || 0);
+// Recorre el detalle diario de los meses pedidos: fn(fecha, pv, segmentos, hl, neto)
+function recorrerDiario(meses, fn) {
+  for (const m of meses) {
+    const d = D.diaMes[m]; if (!d) continue;
+    const mk = d.marcas || {};
+    for (const [f, pv, mc, cal, un, hl, neto] of d.filas) fn(f, pv, segmentosDe(mk[String(mc)] || "", cal, un), hl, neto || 0);
+  }
 }
 const valSeg = (seg, hl, neto) => seg === "MKTPLACE" ? neto : hl;
-function objetivoTotal(seg, mes) {
-  if (seg === "VINOS" || seg === "MKTPLACE") { const x = (D.mapeos.objExtra || {})[mes]; return x ? +x[seg] || 0 : 0; }
-  const o = D.plan.objetivos; if (!o || o.mes !== mes) return 0;
-  return (o.filas || []).reduce((t, f) => t + (parseFloat((f.obj || {})[seg]) || 0), 0);
+// Totales de un mes por segmento desde los datos mensuales (cliente x artículo), para M-1 / año anterior
+function totalesMes(mes, segs) {
+  const out = Object.fromEntries(segs.map(s => [s, 0])), m = D.M[mes];
+  if (!m) return null;
+  for (let i = 0; i < m.n; i++) { const a = D.A[m.ai[i]]; for (const s of segmentosDe(a.marcaDs, a.cal, a.un)) if (s in out && s !== "MKTPLACE") out[s] += m.hl[i]; }
+  if ("MKTPLACE" in out) out.MKTPLACE = +(m.netoUN || {})["8"] || 0;
+  return out;
+}
+// Corte de un mes: el mes en curso hasta el día de los datos; los anteriores, completos
+const corteDe = M => M === D.mesActual ? D.hoy : diasDelMes(M).pop();
+function selectorMes(pg) {
+  const s = el("select", {onchange: e => { pg.mes = e.target.value; refrescar(); }});
+  [...D.mesesDia].reverse().forEach(m => s.append(el("option", {value: m}, mesTxtLargo(m) + (m === D.mesActual ? " (en curso)" : " (cierre)"))));
+  s.value = pg.mes; return el("label", {class: "selmes"}, "Mes", s);
+}
+function mesDePagina(pg) { if (!pg.mes || !D.diaMes[pg.mes]) pg.mes = D.diaMes[D.mesActual] ? D.mesActual : D.mesesDia[D.mesesDia.length - 1]; return pg.mes; }
+
+// ---- Objetivos del planificador (por vendedor). El planificador guarda solo el último mes cargado;
+// los meses anteriores salen del historial que va guardando la PC (base.objAD).
+function filasObjetivo(mes) {
+  const o = D.plan.objetivos;
+  if (o && o.mes === mes && (o.filas || []).length) return o.filas;
+  return D.objAD[mes] || null;
+}
+// Filas de la tabla que NO son de un vendedor (total empresa, mesas, supervisores): no se suman
+function esFilaGrupo(x) {
+  const n = normNombre(x.nombre);
+  if (!n || n.includes("TOTAL") || n.includes("MESA")) return true;
+  return D.plan.vendedores.some(v => normNombre(v.sv) === n);
+}
+function filaObjetivo(filas, v) {
+  const n = normNombre(v.nombre);
+  const exacta = filas.find(x => +x.pv === v.pv && normNombre(x.nombre) === n) || filas.find(x => n && normNombre(x.nombre) === n);
+  if (exacta) return exacta;
+  const porPv = filas.filter(x => +x.pv === v.pv && !esFilaGrupo(x));
+  return porPv.length === 1 ? porPv[0] : null;
 }
 function objetivoVend(v, seg, mes) {
-  const o = D.plan.objetivos; if (!o || o.mes !== mes) return 0;
-  const f = (o.filas || []).find(x => x.pv && +x.pv === v.pv) || (o.filas || []).find(x => normNombre(x.nombre) === normNombre(v.nombre));
+  const filas = filasObjetivo(mes); if (!filas || !v.nombre) return 0;
+  const f = filaObjetivo(filas, v);
   return f && f.obj ? parseFloat(f.obj[seg]) || 0 : 0;
+}
+// Objetivo de la empresa = suma de los vendedores (no se suman las filas de total / mesas / supervisores)
+function objetivoTotal(seg, mes) {
+  if (seg === "VINOS" || seg === "MKTPLACE") { const x = (D.mapeos.objExtra || {})[mes]; return x ? +x[seg] || 0 : 0; }
+  if (!filasObjetivo(mes)) return 0;
+  return D.plan.vendedores.reduce((t, v) => t + objetivoVend(v, seg, mes), 0);
 }
 function semAvance(p) { if (p == null || !isFinite(p)) return ""; const x = p * 100; return x < 90 ? "sem-rojo" : x < 100 ? "sem-amarillo" : x <= 120 ? "sem-verde" : "sem-azul"; }
 function semVar(p) { if (p == null || !isFinite(p)) return ""; const r = Math.round(p * 100); return r < -10 ? "sem-rojo" : r < 0 ? "sem-amarillo" : "sem-verde"; }
@@ -1017,14 +1074,15 @@ const num4 = v => v == null || !isFinite(v) ? "" : String(Math.round(v * 100) / 
 function sinDiario() { return el("div", {class: "card"}, el("h3", {}, "Todavía no hay datos diarios"), el("div", {class: "nota"}, "Se generan en la próxima corrida de la PC (cierre o noche), o con “2 - ACTUALIZAR AHORA - TABLERO”.")); }
 
 // ---------- 1. AVANCE DIARIO (la primera hoja del Excel de seguimiento) ----------
-PAGINAS.diario = {t: "Avance diario", sinFiltros: true, r() {
+PAGINAS.diario = {t: "Avance diario", sinFiltros: true, mes: null, r() {
   if (!D.diario) return sinDiario();
-  const M = D.mesActual, prev = sumarMes(M, -1), ly = sumarMes(M, -12), corte = D.hoy;
+  const pg = this, M = mesDePagina(pg), enCurso = M === D.mesActual, prev = sumarMes(M, -1), ly = sumarMes(M, -12), corte = corteDe(M);
   const {E, G, F} = ddvMes(M, corte);
   const segs = SEG_DIARIO.map(x => x[0]);
   const real = Object.fromEntries(segs.map(s => [s, 0])), m1 = {...real}, mmaa = {...real};
   const porDia = new Map();
-  recorrerDiario((f, pv, ss, hl, neto) => {
+  const prevDia = !!D.diaMes[prev];
+  recorrerDiario(prevDia ? [M, prev] : [M], (f, pv, ss, hl, neto) => {
     const mes = f.slice(0, 7);
     for (const s of ss) {
       if (!(s in real)) continue;
@@ -1033,21 +1091,21 @@ PAGINAS.diario = {t: "Avance diario", sinFiltros: true, r() {
       else if (mes === prev) m1[s] += v;
     }
   });
+  if (!prevDia) { const t = totalesMes(prev, segs); if (t) Object.assign(m1, t); }
   const mly = D.M[ly];
-  if (mly) {
-    for (let i = 0; i < mly.n; i++) { const a = D.A[mly.ai[i]]; for (const s of segmentosDe(a.marcaDs, a.cal, a.un)) if (s in mmaa && s !== "MKTPLACE") mmaa[s] += mly.hl[i]; }
-    mmaa.MKTPLACE = +(mly.netoUN || {})["8"] || 0;
-  }
+  if (mly) Object.assign(mmaa, totalesMes(ly, segs));
   const fmt = s => s === "MKTPLACE" ? fMonto : fHL;
   const calc = segs.map(s => {
     const obj = objetivoTotal(s, M), r = real[s], tend = E > 0 ? r / E * G : 0;
-    return {s, obj, r, tend, med: E > 0 ? r / E : 0, nec: obj ? (F <= 1 ? obj - r : (obj - r) / F) : null,
+    return {s, obj, r, tend, med: E > 0 ? r / E : 0, nec: obj && enCurso ? (F <= 1 ? obj - r : (obj - r) / F) : null,
             av: obj ? tend / obj : null, m1: m1[s], vsM1: m1[s] ? tend / m1[s] - 1 : null, mmaa: mly ? mmaa[s] : null, vsLy: mly && mmaa[s] ? tend / mmaa[s] - 1 : null};
   });
   const p = el("div");
   const tile = (t, v, d) => el("div", {class: "tile"}, el("div", {class: "t"}, t), el("div", {class: "v", style: "font-size:20px"}, v), el("div", {class: "d"}, d || ""));
+  p.append(el("div", {style: "display:flex;gap:12px;align-items:center;margin-bottom:12px"}, selectorMes(pg),
+    enCurso ? null : el("span", {class: "nota", style: "margin:0"}, "Mes cerrado: “Tendencia” es el real final.")));
   p.append(el("div", {class: "tiles"},
-    tile("Avance al", corte.split("-").reverse().join("/"), D.conPedidos ? "incluye pedidos de ese día" : "comprobantes"),
+    tile(enCurso ? "Avance al" : "Cierre al", corte.split("-").reverse().join("/"), enCurso ? (D.conPedidos ? "incluye pedidos de ese día" : "comprobantes") : "mes completo"),
     tile("DDV transcurridos", nf1.format(E)), tile("DDV pendientes", nf1.format(F)), tile("DDV total mes", nf1.format(G), mesTxtLargo(M))));
   // resumen
   const filasRes = [
@@ -1065,19 +1123,20 @@ PAGINAS.diario = {t: "Avance diario", sinFiltros: true, r() {
   const tRes = el("table", {class: "tt resumen"},
     el("thead", {}, el("tr", {}, el("th", {style: "text-align:left"}, mesTxtLargo(M)), ...SEG_DIARIO.map(([, t]) => el("th", {style: "text-align:center"}, t)))),
     el("tbody", {}, ...filasRes.map(([t, f, cls]) => el("tr", {class: cls === "gris" ? "gris" : ""}, el("td", {}, el("b", {}, t)), ...calc.map(c => el("td", {style: "text-align:center"}, f(c)))))));
-  const faltan = !D.plan.objetivos?.mes || D.plan.objetivos.mes !== M;
+  const faltan = !filasObjetivo(M);
   p.append(el("div", {class: "card"}, el("h3", {}, "Resumen del mes", el("span", {class: "sub"}, "toda la empresa · HL (MKTPLACE en $ netos) · por fecha de comprobante"),
     el("div", {class: "tools"}, el("button", {onclick: () => exportarCSV(`Avance diario resumen ${M}`, ["", ...SEG_DIARIO.map(x => x[1])],
       [["Objetivo", "obj"], ["Real", "r"], ["Tendencia", "tend"], ["Media real", "med"], ["Media nec.", "nec"], ["Av. vs objetivo", "av"], ["M-1 real", "m1"], ["Tend. vs M-1", "vsM1"], ["Mismo mes año ant.", "mmaa"], ["Tend. vs año ant.", "vsLy"]]
         .map(([t, k]) => [t, ...calc.map(c => num4(c[k]))]))}, "Excel"))),
-    faltan ? el("div", {class: "nota", style: "color:#9b1c1c"}, `Faltan los objetivos de ${mesTxtLargo(M)}: se cargan en el planificador (AJUSTES → Objetivos del mes). VINOS y MKTPLACE, en ⚙ Ajustes del tablero.`) : null,
+    faltan ? el("div", {class: "nota", style: "color:#9b1c1c"}, enCurso ? `Faltan los objetivos de ${mesTxtLargo(M)}: se cargan en el planificador (AJUSTES → Objetivos del mes). VINOS y MKTPLACE, en ⚙ Ajustes del tablero.`
+      : `No hay objetivos guardados de ${mesTxtLargo(M)} (el tablero los empezó a guardar desde noviembre 2026).`) : null,
     el("div", {class: "tw", style: "max-height:none"}, tRes)));
   // por día
   const filasDia = diasDelMes(M).map(d => {
     const v = valorDia(d), x = porDia.get(d), futuro = d > corte;
     const dsem = ["dom", "lun", "mar", "mié", "jue", "vie", "sáb"][new Date(d + "T12:00:00").getDay()];
-    return el("tr", {class: (d === corte ? "hoy " : "") + (futuro ? "futuro" : "") + (v === 0 ? " nohabil" : "")},
-      el("td", {style: "text-align:center"}, v === 0.5 ? "½" : String(v)), el("td", {style: "text-align:left"}, `${dsem} ${d.slice(8)}/${d.slice(5, 7)}`, d === corte && D.conPedidos ? el("span", {class: "pill"}, "con pedidos") : null),
+    return el("tr", {class: (enCurso && d === corte ? "hoy " : "") + (futuro ? "futuro" : "") + (v === 0 ? " nohabil" : "")},
+      el("td", {style: "text-align:center"}, v === 0.5 ? "½" : String(v)), el("td", {style: "text-align:left"}, `${dsem} ${d.slice(8)}/${d.slice(5, 7)}`, enCurso && d === corte && D.conPedidos ? el("span", {class: "pill"}, "con pedidos") : null),
       ...segs.map(s => el("td", {}, futuro ? "" : (s === "MKTPLACE" ? fMonto : fHL)((x || {})[s] || 0) || "0")));
   });
   const tDia = el("table", {class: "tt diario"},
@@ -1092,63 +1151,117 @@ PAGINAS.diario = {t: "Avance diario", sinFiltros: true, r() {
 }};
 
 // ---------- CIERRE DE VENDEDORES (volúmenes por vendedor, como el tableroVol del planificador) ----------
-PAGINAS.cierre = {t: "Cierre vendedores", sinFiltros: true, seg: "CVZ CMQ", r() {
+// Mesas en el orden del equipo. La de Seco tiene dos submesas (cada vendedor está en UNA sola, no se duplica).
+const MESAS = [
+  {id: "CORSINO", t: "MESA DE CORSINO PEDRO", sv: ["CORSINO PEDRO"]},
+  {id: "MORENO", t: "MESA DE FERNANDO MORENO", sv: ["MORENO FERNANDO"]},
+  {id: "ANTUAL", t: "MESA DE PAULA ANTUAL", sv: ["ANTUAL PAULA"]},
+  {id: "SECO", t: "MESA DE SECO ROBERTO", sv: ["MESA AS", "MESA MAYORISTA", "SECO ROBERTO"],
+   sub: [{id: "SECO_AS", t: "Mesa Autoservicio", sv: ["MESA AS"]}, {id: "SECO_MAY", t: "Mesa Mayorista", sv: ["MESA MAYORISTA", "SECO ROBERTO"]}]},
+];
+function mesaDe(sv) {
+  const n = normNombre(sv);
+  for (const m of MESAS) {
+    if (m.sub) for (const s of m.sub) if (s.sv.some(x => normNombre(x) === n)) return [m.id, s.id];
+    if (m.sv.some(x => normNombre(x) === n)) return [m.id, m.sub ? m.sub[m.sub.length - 1].id : null];
+  }
+  return [n ? "SV:" + sv : "OTROS", null];
+}
+PAGINAS.cierre = {t: "Cierre vendedores", sinFiltros: true, seg: "CVZ CMQ", mes: null, mesa: "TODAS", r() {
   if (!D.diario) return sinDiario();
-  const pg = this, M = D.mesActual, prev = sumarMes(M, -1), corte = D.hoy;
+  const pg = this, M = mesDePagina(pg), enCurso = M === D.mesActual, prev = sumarMes(M, -1), corte = corteDe(M);
   const {E, G, F} = ddvMes(M, corte);
   // acumulados por pv y segmento
   const acc = new Map();
-  recorrerDiario((f, pv, ss, hl) => {
-    const mes = f.slice(0, 7); if (mes !== M && mes !== prev) return;
+  recorrerDiario([M, prev], (f, pv, ss, hl) => {
+    const mes = f.slice(0, 7);
     if (mes === M && f > corte) return;
     let a = acc.get(pv); if (!a) { a = {}; acc.set(pv, a); }
     for (const s of ss) { if (!SEGMENTOS_AD.includes(s)) continue; const x = a[s] || (a[s] = {r: 0, m1: 0}); if (mes === M) x.r += hl; else x.m1 += hl; }
   });
-  // vendedores del planificador + los que vendieron y no están en la lista
-  const vend = D.plan.vendedores.slice();
-  for (const pv of acc.keys()) if (!vend.some(v => v.pv === pv)) vend.push({pv, nombre: pv ? `Vendedor ${pv}` : "(sin vendedor)", sv: "OTROS"});
-  const filaDe = (v, seg) => {
-    const a = (acc.get(v.pv) || {})[seg] || {r: 0, m1: 0}, obj = objetivoVend(v, seg, M);
-    return {obj, r: a.r, m1: a.m1};
-  };
+  const sinM1 = !D.diaMes[prev];
+  // vendedores del planificador + los que vendieron y no están en la lista (van a OTROS)
+  const vend = D.plan.vendedores.map(v => ({...v, extra: false}));
+  for (const pv of acc.keys()) if (!vend.some(v => v.pv === pv)) vend.push({pv, nombre: pv ? `Vendedor ${pv}` : "(sin vendedor)", sv: "", extra: true});
+  for (const v of vend) [v.mesa, v.submesa] = v.extra ? ["OTROS", null] : mesaDe(v.sv);
+  // grupos en orden: mesas fijas, supervisores nuevos que aparezcan en el planificador, OTROS
+  const otrosSv = [...new Set(vend.map(v => v.mesa).filter(m => m.startsWith("SV:")))].sort();
+  const grupos = [...MESAS, ...otrosSv.map(id => ({id, t: "MESA DE " + id.slice(3)})), {id: "OTROS", t: "OTROS / VENDEDOR SIN SUPERVISOR"}];
+  const opcionesMesa = [["TODAS", "Todas las mesas"], ...grupos.flatMap(g => [[g.id, g.t.replace("MESA DE ", "Mesa ")], ...(g.sub || []).map(s => [s.id, "   " + s.t])])];
+  if (!opcionesMesa.some(o => o[0] === pg.mesa)) pg.mesa = "TODAS";
+  const filaDe = (v, seg) => { const a = (acc.get(v.pv) || {})[seg] || {r: 0, m1: 0}; return {obj: v.extra ? 0 : objetivoVend(v, seg, M), r: a.r, m1: a.m1}; };
   const calc = x => { const tend = E > 0 ? x.r / E * G : 0;
-    return {...x, tend, av: x.obj ? tend / x.obj : null, vs: x.m1 ? tend / x.m1 - 1 : null, med: E > 0 ? x.r / E : 0, nec: x.obj ? (F <= 1 ? x.obj - x.r : (x.obj - x.r) / F) : null}; };
-  const grupos = new Map();
-  for (const v of vend) { const k = v.sv || "SIN SUPERVISOR"; if (!grupos.has(k)) grupos.set(k, []); grupos.get(k).push(v); }
-  const orden = [...grupos.keys()].sort((a, b) => (a === "OTROS") - (b === "OTROS") || a.localeCompare(b, "es"));
+    return {...x, tend, av: x.obj ? tend / x.obj : null, vs: x.m1 ? tend / x.m1 - 1 : null, med: E > 0 ? x.r / E : 0, nec: x.obj && enCurso ? (F <= 1 ? x.obj - x.r : (x.obj - x.r) / F) : null}; };
+  const suma = (a, b) => { a.obj += b.obj; a.r += b.r; a.m1 += b.m1; return a; };
+  const cero = () => ({obj: 0, r: 0, m1: 0});
   const tablaSeg = seg => {
-    const filas = [], csv = []; const tot = {obj: 0, r: 0, m1: 0};
-    for (const sv of orden) {
-      const st = {obj: 0, r: 0, m1: 0}; const vs = grupos.get(sv).slice().sort((a, b) => a.pv - b.pv);
-      const hijos = vs.map(v => { const x = filaDe(v, seg); st.obj += x.obj; st.r += x.r; st.m1 += x.m1; return [v, x]; })
-                      .filter(([, x]) => x.obj || Math.abs(x.r) > 0.05 || Math.abs(x.m1) > 0.05);
-      if (!hijos.length) continue;
-      for (const [v, x] of hijos) { const c = calc(x); filas.push(filaCierre(`${v.pv} · ${v.nombre}`, c, "")); csv.push([sv, v.pv, v.nombre, ...valoresCSV(c)]); }
-      const cs = calc(st); filas.push(filaCierre(sv, cs, "sub")); csv.push([sv, "", "Subtotal " + sv, ...valoresCSV(cs)]);
-      tot.obj += st.obj; tot.r += st.r; tot.m1 += st.m1;
+    const filas = [], csv = [], tot = cero();
+    // filas de vendedores de una lista; devuelve el subtotal (o null si no hay nada)
+    const bloque = (lista, etiquetaCsv) => {
+      const st = cero();
+      const hijos = lista.slice().sort((a, b) => a.pv - b.pv).map(v => { const x = filaDe(v, seg); suma(st, x); return [v, x]; })
+                         .filter(([, x]) => x.obj || Math.abs(x.r) > 0.05 || Math.abs(x.m1) > 0.05);
+      if (!hijos.length) return null;
+      for (const [v, x] of hijos) { const c = calc(x); filas.push(filaCierre(`${v.pv} · ${v.nombre}`, c, "")); csv.push([etiquetaCsv, v.pv, v.nombre, ...valoresCSV(c)]); }
+      return st;
+    };
+    for (const g of grupos) {
+      const ver = pg.mesa === "TODAS" || pg.mesa === g.id || (g.sub || []).some(s => s.id === pg.mesa);
+      if (!ver) continue;
+      const delGrupo = vend.filter(v => v.mesa === g.id);
+      if (g.sub) {
+        const subs = g.sub.filter(s => pg.mesa === "TODAS" || pg.mesa === g.id || pg.mesa === s.id);
+        const ini = filas.length, stG = cero(); let n = 0;
+        filas.push(filaTitulo(g.t, "mesa"));
+        for (const s of subs) {
+          const ini2 = filas.length; filas.push(filaTitulo(s.t, "submesa"));
+          const st = bloque(delGrupo.filter(v => v.submesa === s.id), `${g.t} · ${s.t}`);
+          if (!st) { filas.length = ini2; continue; }
+          const cs = calc(st); filas.push(filaCierre("Subtotal " + s.t, cs, "sub2")); csv.push([`${g.t} · ${s.t}`, "", "Subtotal " + s.t, ...valoresCSV(cs)]);
+          suma(stG, st); n++;
+        }
+        if (!n) { filas.length = ini; continue; }
+        if (subs.length > 1) { const cs = calc(stG); filas.push(filaCierre("TOTAL " + g.t, cs, "sub")); csv.push([g.t, "", "TOTAL " + g.t, ...valoresCSV(cs)]); }
+        suma(tot, stG);
+      } else {
+        const ini = filas.length; filas.push(filaTitulo(g.t, "mesa"));
+        const st = bloque(delGrupo, g.t);
+        if (!st) { filas.length = ini; continue; }
+        const cs = calc(st); filas.push(filaCierre("TOTAL " + g.t, cs, "sub")); csv.push([g.t, "", "TOTAL " + g.t, ...valoresCSV(cs)]);
+        suma(tot, st);
+      }
     }
-    const ct = calc(tot); csv.push(["", "", "LOGÍSTICA TOTAL", ...valoresCSV(ct)]);
+    const todas = pg.mesa === "TODAS", ct = calc(tot);
+    if (todas) csv.push(["", "", "TOTAL EMPRESA", ...valoresCSV(ct)]);
     const t = el("table", {class: "tt cierre"},
-      el("thead", {}, el("tr", {}, el("th", {style: "text-align:left"}, "Vendedor"), ...["Objetivo", "Real", "Avance", "Tend.", "M-1 real", "Vs M-1", "Media real", "Media nec."].map(h => el("th", {}, h)))),
-      el("tbody", {}, ...filas), el("tfoot", {}, filaCierre("LOGÍSTICA TOTAL", ct, "total")));
+      el("thead", {}, el("tr", {}, el("th", {style: "text-align:left"}, "Vendedor"), ...["Objetivo", "Real", "Avance", enCurso ? "Tend." : "Cierre", "M-1 real", "Vs M-1", "Media real", "Media nec."].map(h => el("th", {}, h)))),
+      el("tbody", {}, ...filas), todas ? el("tfoot", {}, filaCierre("TOTAL EMPRESA · LOGÍSTICA TOTAL", ct, "total")) : null);
     return {t, csv};
   };
   const p = el("div");
   const segBtns = el("div", {class: "seg"}, ...SEGMENTOS_AD.map(sg => el("button", {class: pg.seg === sg ? "on" : "", onclick: () => { pg.seg = sg; refrescar(); }}, sg)));
-  const head = ["Supervisor", "PV", "Vendedor", "Objetivo", "Real", "Avance %", "Tendencia", "M-1 real", "Vs M-1 %", "Media real", "Media nec."];
+  const selMesa = el("select", {onchange: e => { pg.mesa = e.target.value; refrescar(); }});
+  opcionesMesa.forEach(([v, t]) => selMesa.append(el("option", {value: v}, t))); selMesa.value = pg.mesa;
+  const head = ["Mesa", "PV", "Vendedor", "Objetivo", "Real", "Avance %", enCurso ? "Tendencia" : "Cierre", "M-1 real", "Vs M-1 %", "Media real", "Media nec."];
   const {t, csv} = tablaSeg(pg.seg);
-  const faltan = !D.plan.objetivos?.mes || D.plan.objetivos.mes !== M;
-  p.append(el("div", {style: "display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px"}, segBtns,
-    el("span", {class: "nota", style: "margin:0"}, `Avance al ${corte.split("-").reverse().join("/")}${D.conPedidos ? " (con pedidos)" : ""} · DDV ${nf1.format(E)} de ${nf1.format(G)} · por vendedor del comprobante`)));
-  p.append(el("div", {class: "card"}, el("h3", {}, `Cierre ${pg.seg}`, el("span", {class: "sub"}, mesTxtLargo(M) + " · HL"),
+  const nomMesa = (opcionesMesa.find(o => o[0] === pg.mesa) || [, ""])[1].trim();
+  const sufijo = pg.mesa === "TODAS" ? "" : " - " + nomMesa;
+  const faltan = !filasObjetivo(M);
+  p.append(el("div", {style: "display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px"}, selectorMes(pg),
+    el("label", {class: "selmes"}, "Supervisor", selMesa), segBtns));
+  p.append(el("div", {class: "nota", style: "margin:0 0 10px"}, `${enCurso ? "Avance al" : "Cierre al"} ${corte.split("-").reverse().join("/")}${enCurso && D.conPedidos ? " (con pedidos)" : ""} · DDV ${nf1.format(E)} de ${nf1.format(G)} · por vendedor del comprobante`
+    + (sinM1 ? ` · sin detalle de ${mesTxtLargo(prev)} para el M-1` : "")));
+  p.append(el("div", {class: "card"}, el("h3", {}, `Cierre ${pg.seg}${sufijo}`, el("span", {class: "sub"}, mesTxtLargo(M) + " · HL"),
     el("div", {class: "tools"},
-      el("button", {onclick: () => exportarCSV(`Cierre ${pg.seg} ${M}`, head, csv.map(r => r.map((x, i) => i >= 3 ? num4(x) : x)))}, "Excel"),
-      el("button", {onclick: () => exportarCSV(`Cierre vendedores TODOS ${M}`, ["Segmento", ...head],
+      el("button", {onclick: () => exportarCSV(`Cierre ${pg.seg}${sufijo} ${M}`, head, csv.map(r => r.map((x, i) => i >= 3 ? num4(x) : x)))}, "Excel"),
+      el("button", {onclick: () => exportarCSV(`Cierre vendedores TODOS los segmentos${sufijo} ${M}`, ["Segmento", ...head],
         SEGMENTOS_AD.flatMap(sg => tablaSeg(sg).csv.map(r => [sg, ...r.map((x, i) => i >= 3 ? num4(x) : x)])))}, "Excel todos los segmentos"))),
-    faltan ? el("div", {class: "nota", style: "color:#9b1c1c"}, `Faltan los objetivos de ${mesTxtLargo(M)} en el planificador (AJUSTES → Objetivos del mes).`) : null,
+    faltan ? el("div", {class: "nota", style: "color:#9b1c1c"}, enCurso ? `Faltan los objetivos de ${mesTxtLargo(M)} en el planificador (AJUSTES → Objetivos del mes).`
+      : `No hay objetivos guardados de ${mesTxtLargo(M)}.`) : null,
     el("div", {class: "tw", style: "max-height:none"}, t)));
   return p;
 }};
+function filaTitulo(t, cls) { return el("tr", {class: cls}, el("td", {colspan: 9}, t)); }
 function valoresCSV(c) { return [c.obj, c.r, c.av == null ? "" : c.av * 100, c.tend, c.m1, c.vs == null ? "" : c.vs * 100, c.med, c.nec]; }
 function filaCierre(nombre, c, cls) {
   return el("tr", {class: cls}, el("td", {}, nombre), el("td", {}, c.obj ? fHL(c.obj) : "-"), el("td", {}, fHL(c.r) || "0"),
