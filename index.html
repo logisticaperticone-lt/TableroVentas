@@ -311,7 +311,7 @@ function armarModelo(docs) {
   const M = {};
   for (const [k, d] of Object.entries(docs)) {
     if (!k.startsWith("mes_")) continue;
-    const n = d.c.length, ci = new Int32Array(n), ai = new Int32Array(n), hl = new Float64Array(n), pos = new Uint8Array(n);
+    const n = d.c.length, ci = new Int32Array(n), ai = new Int32Array(n), hl = new Float64Array(n), pos = new Uint8Array(n), neto = d.n ? new Float64Array(d.n) : null;
     for (let i = 0; i < n; i++) {
       let c = cliIdx.get(d.c[i]);
       if (c === undefined) { c = C.length; cliIdx.set(d.c[i], c); C.push({cod: d.c[i], razon: "(no está en el maestro)", supChess: "", vend: "(sin vendedor)", sub: "(sin subcanal)", loc: "(sin localidad)", anulado: "SI", dias: "(sin día)", fantasma: true}); }
@@ -319,10 +319,10 @@ function armarModelo(docs) {
       if (a === undefined) { a = A.length; artIdx.set(d.a[i], a); A.push({cod: d.a[i], nombre: "(artículo " + d.a[i] + ")", marca: 0, marcaDs: "", cal: 0, calDs: "", sabor: "", un: 0, unDs: "", hlBulto: 0, bxp: 0}); }
       ci[i] = c; ai[i] = a; hl[i] = d.h[i]; pos[i] = d.p[i];
     }
-    M[d.mes] = {n, ci, ai, hl, pos, netoUN: d.netoUN || {}};
+    M[d.mes] = {n, ci, ai, hl, pos, neto, netoUN: d.netoUN || {}};
   }
   C.forEach(c => c.label = `${c.cod} - ${c.razon}`);
-  D.A = A; D.C = C; D.M = M; D.meses = Object.keys(M).sort();
+  D.A = A; D.C = C; D.M = M; D.meses = Object.keys(M).sort(); D.cliIdx = cliIdx; D.artIdx = artIdx;
   // día x vendedor del comprobante x marca x calibre x UN: un documento por mes ("dia_AAAA-MM")
   D.diaMes = {};
   for (const [k, d] of Object.entries(docs)) if (k.startsWith("dia_") && d && d.filas) D.diaMes[d.mes || k.slice(4)] = d;
@@ -450,7 +450,9 @@ function aplicarFiltros() {
 // de la página; Ctrl+clic suma filas (de la misma tabla = "o"; de otra tabla = "y").
 const CRUCE = {};          // página -> Map(idTabla -> [camino, ...]); camino = [[dim, valor], ...]
 const cruceDe = () => CRUCE[PAG] || (CRUCE[PAG] = new Map());
+let CRUCE_EXCL = null;     // tabla que se está armando (su propia selección no la filtra)
 function aplicarCruce(excluir) {
+  CRUCE_EXCL = excluir;
   cliOk = cliBase.slice(); artOk = artBase.slice();
   for (const [id, caminos] of cruceDe()) {
     if (id === excluir || !caminos.length) continue;
@@ -546,12 +548,12 @@ function abrirPop(f, wrap) {
 // recorre las ventas del mes que pasan los filtros
 function scan(mes, fn, {ignorarArt = false, ignorarCli = false} = {}) {
   const m = D.M[mes]; if (!m) return;
-  const {n, ci, ai, hl, pos} = m;
+  const {n, ci, ai, hl, pos, neto} = m;
   for (let i = 0; i < n; i++) {
     const c = ci[i], a = ai[i];
     if (!ignorarCli && !cliOk[c]) continue;
     if (!ignorarArt && !artOk[a]) continue;
-    fn(c, a, hl[i], pos[i]);
+    fn(c, a, hl[i], pos[i], neto ? neto[i] : 0);
   }
 }
 
@@ -565,19 +567,20 @@ const DIM = {
   un:     {t: "Unidad de negocio", src: "a", get: a => D.A[a].unDs || "(en blanco)"},
   magr:   {t: "Marca agrupada", src: "a", get: a => D.A[a].marcaAgr},
   marca:  {t: "Marca", src: "a", get: a => D.A[a].marcaDs || "(en blanco)"},
+  segc:   {t: "Segmento CZA", src: "a", get: a => D.A[a].segCza},
   cal:    {t: "Calibre", src: "a", get: a => D.A[a].calTxt},
   sabor:  {t: "Sabor", src: "a", get: a => D.A[a].sabor || "(en blanco)"},
   art:    {t: "Artículo", src: "a", get: a => `${D.A[a].cod} - ${D.A[a].nombre}`},
 };
-const keyOf = (d, c, a) => DIM[d].src === "c" ? DIM[d].get(c) : DIM[d].get(a);
+const keyOf = (d, c, a, x) => DIM[d].src === "c" ? DIM[d].get(c) : DIM[d].src === "a" ? DIM[d].get(a) : DIM[d].get(x);
 
 // árbol genérico: niveles + acumulador por nodo
 function arbol(niveles, init) {
   const raiz = {label: "Total", kids: new Map(), acc: init(), nivel: -1};
-  return {raiz, nodos(c, a) {
+  return {raiz, nodos(c, a, x) {
     const out = [raiz]; let n = raiz;
     for (let l = 0; l < niveles.length; l++) {
-      const k = keyOf(niveles[l], c, a);
+      const k = keyOf(niveles[l], c, a, x);
       let h = n.kids.get(k);
       if (!h) { h = {label: k, kids: new Map(), acc: init(), nivel: l, padre: n}; n.kids.set(k, h); }
       out.push(h); n = h;
@@ -735,7 +738,7 @@ function tablaUI(titulo, sub, def, opts = {}) {
   const card = el("div", {class: "card"});
   const idE = PAG + "|" + (opts.id || titulo);
   const previo = opts.id ? ESTADO_TABLAS[idE] : null;
-  const estado = {orden: def.orden ?? 0, asc: false, abiertos: new Set(), limite: opts.limite || 300, buscar: "", ...(previo || {})};
+  const estado = {orden: def.orden ?? 0, asc: def.asc ?? false, abiertos: new Set(), limite: opts.limite || 300, buscar: "", ...(previo || {})};
   if (opts.id) ESTADO_TABLAS[idE] = estado;
   const selec = opts.id && def.niveles ? new Set((cruceDe().get(opts.id) || []).map(claveCamino)) : null;
   const tw = el("div", {class: "tw", style: opts.alto ? `max-height:${opts.alto}px` : ""});
@@ -967,6 +970,51 @@ const PAGINAS = {
     return p;
   }},
 };
+
+// ============================================================================ Comparación unidades de negocio
+// (lo que eran "Comparación CZA" y "Comparación UNG" del Power BI): por cada mes, la venta (tendencia en el mes en curso)
+// contra el mismo mes del año anterior, en % o en HL.
+const UN_COMP = {CZA: {t: "Cerveza", un: 1, marcas: ["segc", "magr"], col1: "Segmento / Marca agrupada"},
+                 UNG: {t: "UNG", un: 3, marcas: ["marca"], col1: "Marca"},
+                 TODAS: {t: "Todas", un: 0, marcas: ["un", "magr"], col1: "UN / Marca agrupada"}};
+function mesesComparables(mes, n = 12) { return D.meses.filter(m => m <= mes && m > sumarMes(mes, -n) && D.M[sumarMes(m, -12)]); }
+function tablaComp(niveles, meses, un, modo) {
+  const k = meses.length;
+  const T = arbol(niveles, () => new Float64Array(2 * k));       // [0..k): año anterior · [k..2k): este año
+  const fac = meses.map(factorTendencia);
+  meses.forEach((m, j) => {
+    const sumar = (pos, f) => (c, a, h) => { if (un && D.A[a].un !== un) return; for (const n of T.nodos(c, a)) n.acc[pos] += h * f; };
+    scan(sumarMes(m, -12), sumar(j, 1)); scan(m, sumar(k + j, fac[j]));
+  });
+  const vals = acc => {
+    const out = []; let ly = 0, am = 0;
+    for (let j = 0; j < k; j++) { const a = acc[j], b = acc[k + j]; ly += a; am += b; out.push(modo === "hl" ? (a || b ? b - a : null) : a ? b / a - 1 : null); }
+    out.push(modo === "hl" ? (ly || am ? am - ly : null) : ly ? am / ly - 1 : null);
+    return out;
+  };
+  const f = modo === "hl" ? (v => v == null ? "" : (v > 0 ? "+" : "") + nf1.format(v)) : (v => v == null || !isFinite(v) ? "" : (v > 0 ? "+" : "") + nf1.format(v * 100) + "%");
+  const cls = v => v == null || !isFinite(v) || Math.abs(v) < (modo === "hl" ? 0.05 : 0.0005) ? "" : v > 0 ? "up" : "down";
+  const cols = meses.map((m, j) => ({t: mesTxt(m), f, cls, sub: fac[j] !== 1 ? "tendencia" : ""}));
+  cols.push({t: "Período", f, cls, grp: true, sub: `${mesTxt(meses[0])} a ${mesTxt(meses[k - 1])}`});
+  return {raiz: T.raiz, vals, cols, vacio: acc => !acc.some(v => Math.abs(v) > 0.05), orden: k, niveles};
+}
+PAGINAS.comparacion = {t: "Comparación unidades de negocio", un: "CZA", modo: "pct", r(mes) {
+  const pg = this, p = el("div");
+  const cfg = UN_COMP[pg.un], meses = mesesComparables(mes);
+  const segUN = el("div", {class: "seg"}, ...Object.entries(UN_COMP).map(([k, v]) => el("button", {class: pg.un === k ? "on" : "", onclick: () => { pg.un = k; cruceDe().clear(); refrescar(); }}, v.t)));
+  const segModo = el("div", {class: "seg"},
+    el("button", {class: pg.modo === "pct" ? "on" : "", onclick: () => { pg.modo = "pct"; refrescar(); }}, "Variación %"),
+    el("button", {class: pg.modo === "hl" ? "on" : "", onclick: () => { pg.modo = "hl"; refrescar(); }}, "Diferencia en HL"));
+  p.append(el("div", {style: "margin-bottom:12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap"}, el("b", {}, "Unidad de negocio"), segUN, segModo,
+    el("span", {class: "nota", style: "margin:0"}, "Cada mes contra el mismo mes del año anterior. En el mes en curso se compara la tendencia (proyección al cierre).")));
+  if (!meses.length) { p.append(el("div", {class: "card"}, el("h3", {}, "No hay meses para comparar"), el("div", {class: "nota"}, "Hace falta tener la venta del mismo mes del año anterior."))); return p; }
+  const u = cfg.un, m = pg.modo, sub = `vs año anterior · ${m === "hl" ? "HL" : "%"}`;
+  p.append(el("div", {style: "margin-bottom:14px"}, tablaC(`Comparación marcas ${cfg.t}`, sub, () => tablaComp(cfg.marcas, meses, u, m), {col1: cfg.col1, abrirPrimerNivel: pg.un !== "UNG"})));
+  p.append(el("div", {class: "grid g2"},
+    tablaC(`Comparación canales ${cfg.t}`, sub, () => tablaComp(["canal", "sub"], meses, u, m), {col1: "Canal / Subcanal"}),
+    tablaC(`Comparación calibres ${cfg.t}`, sub, () => tablaComp(["cal"], meses, u, m), {col1: "Calibre"})));
+  return p;
+}};
 
 function tablaCCCMes(meses) {
   const T = arbol(["un"], () => meses.map(() => new Map()));
@@ -1371,6 +1419,410 @@ function filaCierre(nombre, c, cls) {
     el("td", {}, fHL(c.med)), el("td", {}, c.nec == null ? "-" : fHL(c.nec)));
 }
 
+// ============================================================================ WAPI · 2.4.1.1 Informe de Trade Spend
+// El WAPI (descuentos de las acciones comerciales) lo manda CMQ en Excel. Se carga en AJUSTES → WAPI del mes:
+// el navegador lo agrupa por cliente × artículo × acción y lo guarda en Firebase (colección tablero_wapi).
+const COL_WAPI = "tablero_wapi";
+const W = {indice: null, M: {}, acts: [], actIdx: new Map(), listo: false, error: "", cargando: null};
+function tipoAccion(d) { const s = norm(d); return s.startsWith("DC") ? "Descentralizada" : s.startsWith("SC") ? "Bonificación manual" : s.startsWith("NEGOCIACI") ? "Negociación" : "Centralizada"; }
+// textos que vienen en CP850 leídos como Latin-1 (NEGOCIACIàN, ORDO¥E…)
+const FIX_TXT = {"à": "Ó", "¥": "Ñ", "µ": "Á", "Ö": "Í", "é": "Ú", "¤": "ñ", "¢": "ó", "¡": "í", "£": "ú", "‚": "é"};
+const arreglarTxt = t => /[à¥µÖ]/.test(t) ? t.replace(/[à¥µÖé¤¢¡£‚]/g, ch => FIX_TXT[ch]) : t;
+// parte de la venta del mes que cae en los días que tiene el WAPI (para un WAPI parcial, p. ej. el mes en curso)
+function factorWapi(mes) {
+  const w = W.M[mes]; if (!w) return null; if (w.fac !== undefined) return w.fac;
+  const dd = D.diaMes?.[mes]; w.fac = null;
+  if (w.dias && dd?.filas?.length) {
+    const tot = new Map(), den = new Map();
+    for (const f of dd.filas) { const u = f[4]; const t = tot.get(u) || [0, 0]; t[0] += f[5]; t[1] += f[6]; tot.set(u, t);
+      if (w.dias.has(f[0])) { const x = den.get(u) || [0, 0]; x[0] += f[5]; x[1] += f[6]; den.set(u, x); } }
+    const fac = new Map(); let parcial = false;
+    for (const [u, t] of tot) { const x = den.get(u) || [0, 0]; const fh = t[0] > 0.05 ? x[0] / t[0] : 1, fn = t[1] > 1 ? x[1] / t[1] : 1; fac.set(u, [fh, fn]); if (fh < 0.995 || fn < 0.995) parcial = true; }
+    if (parcial) w.fac = fac;
+  }
+  return w.fac;
+}
+const TS_TIPOS = ["Centralizada", "Descentralizada", "Bonificación manual", "Negociación"];
+const mesLabel = m => `${m} · ${MESES_TXT[+m.slice(5)]}`;
+Object.assign(DIM, {
+  mes:  {t: "Mes", src: "t", get: x => mesLabel(x.mes)},
+  tipo: {t: "Tipo de acción", src: "w", get: x => W.acts[x.x].tipo},
+  part: {t: "Participación CMQ", src: "w", get: x => W.acts[x.x].part + "%"},
+  dacc: {t: "Descripción acción", src: "w", get: x => W.acts[x.x].desc},
+  acc:  {t: "Acción", src: "w", get: x => W.acts[x.x].cod},
+  segu: {t: "Segmento UNG", src: "a", get: a => D.A[a].un === 3 ? (D.A[a].top === "TOP" ? "TOP" : "FAM") : "(no es UNG)"},
+});
+
+// ---------- índices de clientes / artículos que no están en el maestro (los agrega como en las ventas)
+function idxCliente(cod) {
+  let c = D.cliIdx.get(cod);
+  if (c === undefined) { c = D.C.length; D.cliIdx.set(cod, c);
+    D.C.push({cod, razon: "(no está en el maestro)", supChess: "", vend: "(sin vendedor)", sub: "(sin subcanal)", loc: "(sin localidad)", anulado: "SI", dias: "(sin día)",
+              fantasma: true, label: `${cod} - (no está en el maestro)`, sup: "(sin maestro)", canal: "OTROS", p1p4: false}); }
+  return c;
+}
+function idxArticulo(cod) {
+  let a = D.artIdx.get(cod);
+  if (a === undefined) { a = D.A.length; D.artIdx.set(cod, a);
+    D.A.push({cod, nombre: "(artículo " + cod + ")", marca: 0, marcaDs: "", cal: 0, calDs: "", sabor: "", un: 0, unDs: "", hlBulto: 0, bxp: 0,
+              marcaAgr: "(en blanco)", segCza: "NO APLICABLE", top: "NO TOP", bc: "(resto)", cero: "(resto)", calTxt: "(sin calibre)"}); }
+  return a;
+}
+function wapiModelo(doc) {
+  const xmap = doc.acts.map(([cod, desc, part]) => {
+    const k = cod + "\u0001" + desc + "\u0001" + part; let i = W.actIdx.get(k);
+    if (i === undefined) { i = W.acts.length; W.actIdx.set(k, i); W.acts.push({cod: cod || "(sin código)", desc: desc || "(sin descripción)", part: +part || 0, tipo: tipoAccion(desc)}); }
+    return i;
+  });
+  const n = doc.c.length, ci = new Int32Array(n), ai = new Int32Array(n), xi = new Int32Array(n);
+  for (let i = 0; i < n; i++) { ci[i] = idxCliente(doc.c[i]); ai[i] = idxArticulo(doc.a[i]); xi[i] = xmap[doc.x[i]]; }
+  return {mes: doc.mes, n, ci, ai, xi, d: Float64Array.from(doc.d), m: Float64Array.from(doc.m), dias: doc.dias ? new Set(doc.dias) : null,
+          hasta: doc.dias ? doc.dias[doc.dias.length - 1] : null};
+}
+
+// ---------- leer el Excel (o el .json.gz ya procesado) y agrupar
+let XLSX_LIB = null;
+const libXLSX = async () => XLSX_LIB || (XLSX_LIB = await import("https://cdn.sheetjs.com/xlsx-0.20.3/package/xlsx.mjs"));
+const numW = v => typeof v === "number" && isFinite(v) ? v : (typeof v === "string" && v.trim() !== "" && isFinite(+v.replace(",", ".")) ? +v.replace(",", ".") : null);
+function diaDeFecha(v) {
+  const p2 = x => String(x).padStart(2, "0");
+  if (v instanceof Date && !isNaN(v)) { const d = new Date(v.getTime() + 12 * 36e5); return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`; }
+  if (typeof v === "number" && v > 20000) return new Date(Date.UTC(1899, 11, 30) + Math.round(v) * 864e5).toISOString().slice(0, 10);
+  const s = String(v ?? "").trim(); let m;
+  if ((m = s.match(/^(\d{4})-(\d{2})-(\d{2})/))) return `${m[1]}-${m[2]}-${m[3]}`;
+  if ((m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/))) return `${m[3]}-${p2(m[2])}-${p2(m[1])}`;
+  return null;
+}
+function agrupadorWapi(archivo) {
+  const meses = {};
+  return {
+    hoja(filas) {
+      const h = (filas[0] || []).map(x => String(x ?? "").trim());
+      if (!h.includes("Descuento $ sobre PN SF") || !h.includes("Cod. Cliente")) return false;
+      const ix = k => h.indexOf(k);
+      const I = {f: ix("Fecha"), c: ix("Cod. Cliente"), a: ix("Artículo Distribuidora"), acm: ix("Artículo CMQ"), d: ix("Descuento $ sobre PN SF"), m: ix("Monto A Acreditar"),
+                 acc: ix("Acción"), dacc: ix("Descripción Acción"), part: ix("Participación CMQ"), tot: ix("Total"), pct: ix("Descuento %"), sc: ix("Cantidad Sin Cargo"), pn: ix("Precio Neto SF")};
+      const v = (r, i) => i < 0 ? null : r[i];
+      for (let k = 1; k < filas.length; k++) {
+        const r = filas[k]; if (!r) continue;
+        const dia = diaDeFecha(v(r, I.f)); const cli = numW(v(r, I.c)); if (!dia || cli == null) continue; const mes = dia.slice(0, 7);
+        const art = numW(v(r, I.a)) ?? numW(v(r, I.acm)) ?? 0;
+        let d = numW(v(r, I.d));
+        if (d == null) d = (numW(v(r, I.tot)) || 0) * (numW(v(r, I.pct)) || 0) / 100 + (numW(v(r, I.sc)) || 0) * (numW(v(r, I.pn)) || 0);   // celdas con fórmula sin calcular
+        const part = numW(v(r, I.part)) ?? 0;
+        let m = numW(v(r, I.m)); if (m == null) m = d * part / 100;
+        const acc = String(v(r, I.acc) ?? "").trim(), dacc = arreglarTxt(String(v(r, I.dacc) ?? "").trim());
+        const M = meses[mes] || (meses[mes] = {acts: new Map(), g: new Map(), filas: 0, dias: new Set()});
+        M.filas++; M.dias.add(dia);
+        const ak = acc + "\u0001" + dacc + "\u0001" + Math.trunc(part); let xi = M.acts.get(ak); if (xi === undefined) { xi = M.acts.size; M.acts.set(ak, xi); }
+        const gk = Math.trunc(cli) + "|" + Math.trunc(art) + "|" + xi; const g = M.g.get(gk);
+        if (g) { g[0] += d; g[1] += m; } else M.g.set(gk, [d, m]);
+      }
+      return true;
+    },
+    docs() {
+      const out = {};
+      for (const [mes, M] of Object.entries(meses)) {
+        const ks = [...M.g.keys()].map(k => k.split("|").map(Number)).sort((x, y) => x[0] - y[0] || x[1] - y[1] || x[2] - y[2]);
+        const doc = {v: 1, mes, archivo, filas: M.filas, dias: [...M.dias].sort(), desc: 0, acred: 0, acts: [...M.acts.keys()].map(k => { const [a, b, c] = k.split("\u0001"); return [a, b, +c]; }), c: [], a: [], x: [], d: [], m: []};
+        for (const [c, a, x] of ks) { const g = M.g.get(c + "|" + a + "|" + x); doc.c.push(c); doc.a.push(a); doc.x.push(x); doc.d.push(Math.round(g[0])); doc.m.push(Math.round(g[1])); doc.desc += g[0]; doc.acred += g[1]; }
+        doc.desc = Math.round(doc.desc * 100) / 100; doc.acred = Math.round(doc.acred * 100) / 100;
+        out[mes] = doc;
+      }
+      return out;
+    }};
+}
+async function wapiDesdeArchivo(file) {
+  const buf = new Uint8Array(await file.arrayBuffer());
+  if (buf[0] === 0x1f && buf[1] === 0x8b || /\.json$/i.test(file.name)) {
+    const j = JSON.parse(buf[0] === 0x1f ? await gunzipBytes(buf) : new TextDecoder().decode(buf));
+    if (!j.wapi || !j.docs) throw new Error("el archivo no es un WAPI del tablero");
+    return j.docs;
+  }
+  const X = await libXLSX();
+  const wb = X.read(buf, {type: "array", cellDates: true, dense: true});
+  const ag = agrupadorWapi(file.name); let hojas = 0;
+  for (const sn of wb.SheetNames) if (ag.hoja(X.utils.sheet_to_json(wb.Sheets[sn], {header: 1, raw: true, defval: null}))) hojas++;
+  if (!hojas) throw new Error(`"${file.name}" no tiene una hoja con las columnas del WAPI (Fecha, Cod. Cliente, Descuento $ sobre PN SF…)`);
+  return ag.docs();
+}
+
+// ---------- Firebase
+async function aB64(obj) {
+  const s = new Blob([JSON.stringify(obj)]).stream().pipeThrough(new CompressionStream("gzip"));
+  const u = new Uint8Array(await new Response(s).arrayBuffer()); let bin = "";
+  for (let i = 0; i < u.length; i += 0x8000) bin += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+function wapiCargar() {
+  if (W.cargando) return W.cargando;
+  W.cargando = (async () => {
+    if (LOCAL()) { W.indice = W.indice || {}; return; }
+    const {fs, db} = FB;
+    W.indice = (await fs.getDoc(fs.doc(db, COL_WAPI, "indice"))).data()?.meses || {};
+    await Promise.all(Object.entries(W.indice).map(async ([mes, info]) => {
+      const c = await idb.get("wapi_" + mes); let doc;
+      if (c && c.version === info.version) doc = c.data;
+      else {
+        const snap = await fs.getDocs(fs.collection(db, COL_WAPI, "m_" + mes, "partes"));
+        doc = await desdeB64(snap.docs.map(d => [+d.id, d.data().data]).sort((x, y) => x[0] - y[0]).map(x => x[1]).join(""));
+        await idb.set("wapi_" + mes, {version: info.version, data: doc});
+      }
+      W.M[mes] = wapiModelo(doc);
+    }));
+  })().catch(e => { W.error = e.message || String(e); console.error(e); }).finally(() => { W.listo = true; aplicarFiltros(); });
+  return W.cargando;
+}
+async function wapiGuardar(doc) {
+  const info = {archivo: doc.archivo, filas: doc.filas, renglones: doc.c.length, desc: doc.desc, acred: doc.acred, subido: new Date().toISOString(),
+                por: FB?.a?.currentUser?.email || "", version: Date.now()};
+  if (!LOCAL()) {
+    const {fs, db} = FB; const b64 = await aB64(doc), T = 700000, n = Math.ceil(b64.length / T);
+    const col = fs.collection(db, COL_WAPI, "m_" + doc.mes, "partes");
+    const prev = await fs.getDocs(col);
+    for (let i = 0; i < n; i++) await fs.setDoc(fs.doc(col, String(i)), {data: b64.slice(i * T, (i + 1) * T)});
+    for (const d of prev.docs) if (+d.id >= n) await fs.deleteDoc(d.ref);
+    await fs.setDoc(fs.doc(db, COL_WAPI, "indice"), {meses: {[doc.mes]: info}}, {merge: true});
+    await idb.set("wapi_" + doc.mes, {version: info.version, data: doc});
+  }
+  W.indice[doc.mes] = info; W.M[doc.mes] = wapiModelo(doc);
+}
+async function wapiBorrar(mes) {
+  if (!LOCAL()) {
+    const {fs, db} = FB;
+    const snap = await fs.getDocs(fs.collection(db, COL_WAPI, "m_" + mes, "partes"));
+    for (const d of snap.docs) await fs.deleteDoc(d.ref);
+    await fs.updateDoc(fs.doc(db, COL_WAPI, "indice"), new fs.FieldPath("meses", mes), fs.deleteField());
+  }
+  delete W.indice[mes]; delete W.M[mes];
+}
+
+// ---------- AJUSTES → WAPI del mes
+function editorWapi() {
+  const pg = PAGINAS.ajustes;
+  const card = el("div", {class: "card", style: "margin-top:14px"}, el("h3", {}, "WAPI del mes", el("span", {class: "sub"}, "lo que usa la pestaña 2.4.1.1 · Informe de Trade Spend")));
+  if (!W.listo) { wapiCargar().then(() => { if (PAG === "ajustes") refrescar(); }); card.append(el("div", {class: "nota"}, "Cargando los meses del WAPI…")); return card; }
+  if (W.error) card.append(el("div", {class: "nota", style: "color:var(--down)"}, "No pude leer el WAPI de Firebase: " + W.error));
+  const inp = el("input", {type: "file", accept: ".xlsx,.xlsm,.xls,.gz,.json", multiple: true, style: "display:none"});
+  inp.onchange = async () => {
+    const files = [...inp.files]; inp.value = ""; if (!files.length) return;
+    pg.wapiMsg = `Leyendo ${files.length === 1 ? files[0].name : files.length + " archivos"}… (un Excel grande puede tardar un minuto)`; pg.wapiPrev = null; refrescar();
+    try {
+      const docs = {};
+      for (const f of files) Object.assign(docs, await wapiDesdeArchivo(f));
+      if (pg.wapiSolo) for (const m of Object.keys(docs)) if (m !== pg.wapiSolo) delete docs[m];
+      if (!Object.keys(docs).length) throw new Error(pg.wapiSolo ? `el archivo no tiene datos de ${mesTxtLargo(pg.wapiSolo)}` : "no encontré filas con fecha y cliente");
+      pg.wapiPrev = {docs, elegidos: new Set(Object.keys(docs))}; pg.wapiMsg = "";
+    } catch (e) { pg.wapiMsg = "✖ No pude leerlo: " + e.message; }
+    pg.wapiSolo = null; refrescar();
+  };
+  const abrir = solo => { pg.wapiSolo = solo || null; inp.click(); };
+  card.append(inp, el("div", {class: "nota"}, "Elegí el Excel del WAPI que manda CMQ (el de cierre de cada mes). Si trae varios meses, se cargan todos. ",
+    "Si un mes ya estaba cargado, se reemplaza. Se toma el descuento $ sobre PN SF y el monto a acreditar de cada fila, por cliente, artículo y acción."),
+    el("div", {style: "display:flex;gap:10px;align-items:center;margin:8px 0"}, el("button", {class: "btn prim", onclick: () => abrir(null)}, "📤 Cargar WAPI del mes…"),
+      pg.wapiMsg ? el("span", {class: "nota", style: "margin:0"}, pg.wapiMsg) : null));
+  // vista previa antes de guardar
+  if (pg.wapiPrev) {
+    const pv = pg.wapiPrev, ms = Object.keys(pv.docs).sort();
+    const filas = ms.map(m => { const d = pv.docs[m], ya = W.indice[m];
+      const cb = el("input", {type: "checkbox"}); cb.checked = pv.elegidos.has(m); cb.onchange = () => cb.checked ? pv.elegidos.add(m) : pv.elegidos.delete(m);
+      return [cb, mesTxtLargo(m), d.archivo, nf0.format(d.filas), fMonto(d.desc), fMonto(d.acred),
+              ya ? el("span", {class: "down"}, `reemplaza el de ${ya.archivo}`) : el("span", {class: "up"}, "nuevo")]; });
+    const guardar = async () => {
+      const el_ = [...pv.elegidos].sort(); if (!el_.length) return;
+      pg.wapiMsg = "Guardando…"; refrescar();
+      try { for (const m of el_) { pg.wapiMsg = `Guardando ${mesTxtLargo(m)}…`; await wapiGuardar(pv.docs[m]); }
+            pg.wapiPrev = null; pg.wapiMsg = `✔ Guardado: ${el_.map(mesTxt).join(", ")}`; aplicarFiltros(); }
+      catch (e) { pg.wapiMsg = "✖ No se pudo guardar: " + e.message; }
+      refrescar();
+    };
+    card.append(el("div", {style: "border:1px solid #f0b47a;background:#fff9f2;border-radius:6px;padding:8px 10px;margin:6px 0 12px"},
+      el("b", {}, "Revisá lo que se va a guardar"),
+      tablaSimple(["", "Mes", "Archivo", "Filas", "Descuento $", "A acreditar CMQ", ""], filas, 260),
+      el("div", {style: "display:flex;gap:8px;margin-top:8px"}, el("button", {class: "btn prim", onclick: guardar}, "Guardar"),
+        el("button", {class: "btn", onclick: () => { pg.wapiPrev = null; pg.wapiMsg = ""; refrescar(); }}, "Cancelar"))));
+  }
+  // meses cargados
+  const ms = Object.keys(W.indice || {}).sort().reverse();
+  if (!ms.length) card.append(el("div", {class: "nota"}, "Todavía no hay ningún mes cargado."));
+  else card.append(tablaSimple(["Mes", "Archivo", "Filas", "Descuento $", "A acreditar CMQ", "Subido", ""], ms.map(m => { const x = W.indice[m];
+    const bor = el("button", {class: "btn", style: "padding:2px 8px"}, "Borrar");
+    bor.onclick = async () => {
+      if (!bor.dataset.ok) { bor.dataset.ok = 1; bor.textContent = "¿Seguro? tocá de nuevo"; bor.classList.add("prim"); setTimeout(() => { if (bor.isConnected) { delete bor.dataset.ok; bor.textContent = "Borrar"; bor.classList.remove("prim"); } }, 4000); return; }
+      try { await wapiBorrar(m); pg.wapiMsg = `✔ Borrado ${mesTxtLargo(m)}`; } catch (e) { pg.wapiMsg = "✖ No se pudo borrar: " + e.message; }
+      refrescar();
+    };
+    return [mesTxtLargo(m), x.archivo || "", nf0.format(x.filas || 0), fMonto(x.desc), fMonto(x.acred),
+            (x.subido ? x.subido.slice(8, 10) + "/" + x.subido.slice(5, 7) + "/" + x.subido.slice(2, 4) + " " + x.subido.slice(11, 16) : "") + (x.por ? " · " + x.por.split("@")[0] : ""),
+            el("span", {style: "display:flex;gap:6px"}, el("button", {class: "btn", style: "padding:2px 8px", onclick: () => abrir(m)}, "Volver a subir"), bor)]; }), 420));
+  return card;
+}
+
+// ---------- motor del Trade Spend
+const unCorto = a => { const x = D.A[a]; return x.un === 1 ? "CZA" : x.un === 3 ? "UNG" : (x.unDs || "(sin UN)"); };
+const TS_MED = {desc: {t: "Descuento $", f: fMonto}, acred: {t: "A acreditar CMQ", f: fMonto},
+                hl: {t: "Desc $/HL", f: v => v == null || !isFinite(v) ? "" : "$ " + nf0.format(v)},
+                fact: {t: "Desc / fact.", f: v => v == null || !isFinite(v) ? "" : nf1.format(v * 100) + "%"}};
+function predW(srcs) {
+  const conds = [];
+  for (const [id, caminos] of cruceDe()) {
+    if (id === CRUCE_EXCL || !caminos.length) continue;
+    const cs = caminos.map(cm => cm.filter(([d]) => srcs.includes(DIM[d].src)));
+    if (cs.every(x => x.length)) conds.push(cs);
+  }
+  return conds.length ? x => conds.every(cs => cs.some(cm => cm.every(([d, v]) => DIM[d].get(x) === v))) : null;
+}
+const tsTipoOk = () => { const t = PAGINAS.ts.tipos; return t.size ? xi => t.has(W.acts[xi].tipo) : () => true; };
+// recorre las filas del WAPI que pasan los filtros
+function scanW(meses, un, fn) {
+  const pw = predW(["w", "t"]), ok = tsTipoOk(), x = {mes: "", x: 0};
+  for (const mes of meses) {
+    const w = W.M[mes]; if (!w) continue; x.mes = mes;
+    for (let i = 0; i < w.n; i++) {
+      const c = w.ci[i], a = w.ai[i];
+      if (!cliOk[c] || !artOk[a] || (un && D.A[a].un !== un)) continue;
+      x.x = w.xi[i]; if (!ok(x.x) || (pw && !pw(x))) continue;
+      fn(c, a, x, w.d[i], w.m[i]);
+    }
+  }
+}
+// etiquetas de columnas presentes (ordenadas por descuento, o por un orden fijo)
+function gruposTS(get, meses, un, fijo, soloFijo = false) {
+  const tot = new Map(); scanW(meses, un, (c, a, x, d) => { const k = get(c, a, x); tot.set(k, (tot.get(k) || 0) + d); });
+  const ks = [...tot.keys()].filter(k => Math.abs(tot.get(k)) >= 1);
+  return {get, orden: fijo ? fijo.filter(k => ks.includes(k)).concat(soloFijo ? [] : ks.filter(k => !fijo.includes(k))) : ks.sort((p, q) => tot.get(q) - tot.get(p))};
+}
+// acc por grupo: [descuento, a acreditar, HL vendidos, $ netos vendidos]; el último grupo es el total
+function tablaTS(niveles, {grupos = null, medidas, meses, un = 0}) {
+  const gl = grupos ? grupos.orden : [], G = gl.length + 1, TOT = G - 1;
+  medidas = medidas || (grupos ? ["fact"] : ["desc", "hl", "fact"]);
+  const T = arbol(niveles, () => new Float64Array(G * 4));
+  const gi = new Map(gl.map((k, i) => [k, i]));
+  scanW(meses, un, (c, a, x, d, m) => {
+    const g = grupos ? gi.get(grupos.get(c, a, x)) : undefined; if (grupos && g === undefined) return;
+    for (const n of T.nodos(c, a, x)) { if (g !== undefined) { n.acc[g * 4] += d; n.acc[g * 4 + 1] += m; } n.acc[TOT * 4] += d; n.acc[TOT * 4 + 1] += m; }
+  });
+  // denominadores: la venta (HL y $ netos) de los mismos clientes y artículos en los mismos meses
+  if (medidas.some(md => md === "hl" || md === "fact") && !niveles.some(d => DIM[d].src === "w")) {
+    const pv = predW(["t"]), xv = {mes: "", x: -1};
+    for (const mes of meses) {
+      xv.mes = mes; if (pv && !pv(xv)) continue;
+      const fw = factorWapi(mes);
+      scan(mes, (c, a, h, p, nt) => {
+        if (un && D.A[a].un !== un) return;
+        if (fw) { const f = fw.get(D.A[a].un); if (f) { h *= f[0]; nt *= f[1]; } }
+        const g = grupos ? gi.get(grupos.get(c, a, xv)) : undefined; if (grupos && g === undefined) return;
+        for (const n of T.nodos(c, a, xv)) { if (g !== undefined) { n.acc[g * 4 + 2] += h; n.acc[g * 4 + 3] += nt; } n.acc[TOT * 4 + 2] += h; n.acc[TOT * 4 + 3] += nt; }
+      });
+    }
+  }
+  const valor = (acc, g, md) => { const d = acc[g * 4]; return md === "desc" ? d : md === "acred" ? acc[g * 4 + 1] : md === "hl" ? (acc[g * 4 + 2] > 0.05 ? d / acc[g * 4 + 2] : null) : (acc[g * 4 + 3] > 1 ? d / acc[g * 4 + 3] : null); };
+  const idx = grupos ? [...gl.keys(), TOT] : [TOT];
+  const vals = acc => idx.flatMap(g => medidas.map(md => valor(acc, g, md)));
+  const cols = idx.flatMap(g => medidas.map((md, j) => ({t: grupos ? (g === TOT ? "Total" : gl[g]) : TS_MED[md].t, sub: grupos && medidas.length > 1 ? TS_MED[md].t : "",
+                                                         f: TS_MED[md].f, grp: grupos && j === 0 && g === TOT})));
+  const esMes = niveles[0] === "mes";
+  return {raiz: T.raiz, vals, cols, niveles, vacio: acc => Math.abs(acc[TOT * 4]) < 1 && Math.abs(acc[TOT * 4 + 1]) < 1,
+          orden: esMes ? -1 : cols.length - medidas.length, asc: esMes};
+}
+// los 3 checks del manual: el último mes contra el promedio de los 3 anteriores (descuento / facturación)
+function tsChecks(meses) {
+  const L = meses[meses.length - 1], P = Object.keys(W.M).sort().filter(m => m < L).slice(-3);
+  if (!L || !P.length) return null;
+  const sumar = ms => {
+    const out = new Map(), add = (k, i, v) => { const o = out.get(k) || [0, 0]; o[i] += v; out.set(k, o); };
+    scanW(ms, 0, (c, a, x, d) => { const u = unCorto(a); if (u !== "CZA" && u !== "UNG") return; const t = W.acts[x.x].tipo === "Negociación" ? "NEGO" : "ACC";
+      add("u|" + u, 0, d); add("c|" + u + "|" + D.C[c].canal, 0, d); add("t|" + u + "|" + t, 0, d); });
+    for (const mes of ms) { const fw = factorWapi(mes); scan(mes, (c, a, h, p, nt) => { const u = unCorto(a); if (u !== "CZA" && u !== "UNG") return;
+      if (fw) { const f = fw.get(D.A[a].un); if (f) nt *= f[1]; }
+      add("u|" + u, 1, nt); add("c|" + u + "|" + D.C[c].canal, 1, nt); add("t|" + u + "|NEGO", 1, nt); add("t|" + u + "|ACC", 1, nt); }); }
+    return out;
+  };
+  const a = sumar([L]), b = sumar(P), r = (mp, k) => { const o = mp.get(k); return o && o[1] > 1 ? o[0] / o[1] : null; };
+  const par = k => ({ahora: r(a, k), antes: r(b, k)});
+  const res = {L, P, un: {}};
+  for (const u of ["CZA", "UNG"]) {
+    const canales = CANALES.map(cn => ({cn, ...par("c|" + u + "|" + cn)})).filter(x => x.ahora != null && x.antes != null && (a.get("c|" + u + "|" + x.cn)?.[0] || 0) >= 1);
+    res.un[u] = {tot: par("u|" + u), canales, acc: par("t|" + u + "|ACC"), nego: par("t|" + u + "|NEGO")};
+  }
+  return res;
+}
+function tarjetaChecks(ch) {
+  const baja = x => x.ahora != null && x.antes != null && x.ahora < x.antes;
+  const pc = v => v == null ? "—" : nf1.format(v * 100) + "%";
+  const sem = ok => el("span", {class: "sem " + (ok ? "sem-verde" : "sem-rojo")}, ok ? "✔ baja" : "✖ no baja");
+  const linea = (t, x) => el("div", {style: "display:flex;justify-content:space-between;gap:8px;margin:3px 0"}, el("span", {}, t), el("span", {}, `${pc(x.antes)} → ${pc(x.ahora)} `, sem(baja(x))));
+  const box = (titulo, desc, kids) => el("div", {class: "tile", style: "border-left-color:var(--brand)"}, el("div", {class: "t"}, titulo), el("div", {class: "d", style: "margin-bottom:6px"}, desc), ...kids);
+  const U = ch.un;
+  return el("div", {class: "card", style: "margin-bottom:14px"},
+    el("h3", {}, "Checks del manual", el("span", {class: "sub"}, `TS / facturación de ${mesTxtLargo(ch.L)} contra el promedio de ${ch.P.map(mesTxt).join(", ")}`)),
+    el("div", {class: "tiles", style: "margin:0"},
+      box("1er check · por negocio", "Que el TS/FACT baje en el tiempo", ["CZA", "UNG"].map(u => linea(u, U[u].tot))),
+      box("2do check · en todos los canales", "Que la baja se dé en cada canal", ["CZA", "UNG"].map(u => { const n = U[u].canales.length, k = U[u].canales.filter(baja).length;
+        return el("div", {style: "margin:3px 0"}, el("div", {style: "display:flex;justify-content:space-between"}, el("b", {}, u), el("span", {}, `${k} de ${n} canales `, sem(n > 0 && k === n))),
+          el("div", {class: "nota", style: "margin:0"}, U[u].canales.map(x => `${x.cn} ${pc(x.antes)}→${pc(x.ahora)}${baja(x) ? " ✔" : " ✖"}`).join(" · "))); })),
+      box("3er check · acciones y negociaciones", "Que la baja se dé en las dos", ["CZA", "UNG"].flatMap(u => [linea(`${u} · acciones`, U[u].acc), linea(`${u} · negociaciones`, U[u].nego)]))));
+}
+
+const TS_VISTAS = [["negocio", "Informe TS · por negocio"], ["canalmes", "TS canal · mes"], ["cza", "TS cerveza · segmento · canal"], ["ung", "TS UNG · segmento · canal"], ["acciones", "Acciones CMQ · LT"]];
+PAGINAS.ts = {t: "2.4.1.1 · Informe de Trade Spend", vista: "negocio", medida: "fact", medAcc: "desc", tipos: new Set(), desde: null, hasta: null, r(mes) {
+  const pg = this, p = el("div");
+  if (!W.listo) { wapiCargar().then(() => { if (PAG === "ts") refrescar(); }); p.append(el("div", {class: "card"}, el("h3", {}, "Cargando el WAPI…"))); return p; }
+  if (W.error) p.append(el("div", {class: "card", style: "margin-bottom:12px"}, el("h3", {}, "No pude leer el WAPI"), el("div", {class: "nota"}, W.error)));
+  const mw = Object.keys(W.M).sort();
+  if (!mw.length) { p.append(el("div", {class: "card"}, el("h3", {}, "Todavía no hay WAPI cargado"), el("div", {class: "nota"}, "Se carga en ⚙ Ajustes → WAPI del mes, con el Excel que manda CMQ."))); return p; }
+  if (!pg.hasta || !mw.includes(pg.hasta)) pg.hasta = mw.filter(m => m <= mes).pop() || mw[mw.length - 1];
+  if (!pg.desde || !mw.includes(pg.desde) || pg.desde > pg.hasta) pg.desde = mw.filter(m => m <= pg.hasta && m > sumarMes(pg.hasta, -12))[0];
+  const meses = mw.filter(m => m >= pg.desde && m <= pg.hasta);
+  const selM = (val, set) => { const s = el("select", {class: "inp", onchange: e => { set(e.target.value); refrescar(); }}); [...mw].reverse().forEach(m => s.append(el("option", {value: m}, mesTxtLargo(m)))); s.value = val; return s; };
+  const seg = (ops, val, set) => el("div", {class: "seg"}, ...ops.map(([k, t]) => el("button", {class: val === k ? "on" : "", onclick: () => { set(k); refrescar(); }}, t)));
+  p.append(el("div", {class: "seg", style: "margin-bottom:10px;flex-wrap:wrap"}, ...TS_VISTAS.map(([k, t]) => el("button", {class: pg.vista === k ? "on" : "", onclick: () => { pg.vista = k; cruceDe().clear(); refrescar(); }}, t))));
+  const chips = el("span", {style: "display:inline-flex;gap:6px;flex-wrap:wrap"}, ...TS_TIPOS.map(t => { const on = pg.tipos.has(t);
+    return el("button", {class: "btn", style: on ? "background:var(--brand);color:#fff;border-color:var(--brand);padding:3px 10px" : "padding:3px 10px",
+      onclick: () => { on ? pg.tipos.delete(t) : pg.tipos.add(t); refrescar(); }}, t); }));
+  p.append(el("div", {style: "display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:12px"},
+    el("label", {class: "selmes"}, "Desde", selM(pg.desde, v => pg.desde = v)), el("label", {class: "selmes"}, "Hasta", selM(pg.hasta, v => pg.hasta = v)),
+    pg.vista === "acciones" ? seg([["desc", "Descuento $"], ["acred", "A acreditar CMQ"]], pg.medAcc, v => pg.medAcc = v)
+                            : seg([["fact", "Desc / facturación"], ["hl", "Desc $ / HL"]], pg.medida, v => pg.medida = v),
+    el("span", {}, el("b", {style: "font-size:11px;color:#666;text-transform:uppercase;margin-right:6px"}, "Tipo de acción"), chips, pg.tipos.size ? " (solo esas)" : " (todas)")));
+  p.append(el("div", {class: "nota", style: "margin:-4px 0 12px"}, "Desc / facturación = descuento $ sobre PN SF del WAPI ÷ $ netos vendidos (Chess) a los mismos clientes y artículos en esos meses. ",
+    "Desc $ / HL = el mismo descuento ÷ HL vendidos. El período de esta pestaña es el de “Desde / Hasta” (el mes de los filtros de arriba no se usa acá)."));
+  const parciales = meses.filter(m => W.M[m].hasta && factorWapi(m));
+  if (parciales.length) p.append(el("div", {class: "nota", style: "margin:-6px 0 12px;color:#9a6a00"}, "WAPI parcial: ",
+    parciales.map(m => `${mesTxtLargo(m)} llega hasta el ${W.M[m].hasta.slice(8)}/${W.M[m].hasta.slice(5, 7)}`).join(" · "), ". En ese mes la facturación y los HL se toman solo de esos días."));
+  const md = pg.medida, sub = `${TS_MED[md].t} · ${mesTxt(meses[0])} a ${mesTxt(meses[meses.length - 1])}`;
+  const gUN = gruposTS((c, a) => unCorto(a), meses, 0, ["CZA", "UNG"], true);
+  const gCanal = un => gruposTS(c => D.C[c].canal, meses, un, CANALES);
+  if (pg.vista === "negocio") {
+    const ch = tsChecks(meses); if (ch) p.append(tarjetaChecks(ch));
+    p.append(el("div", {class: "grid g2"},
+      tablaC("¿Cómo es mi gasto real evolutivo por negocio?", sub, () => tablaTS(["mes"], {grupos: gUN, medidas: [md], meses}), {col1: "Mes"}),
+      tablaC("Seguimiento de mi gasto real evolutivo", "descuento $ y lo que acredita CMQ", () => tablaTS(["mes"], {grupos: gUN, medidas: ["desc", "acred"], meses}), {col1: "Mes"})));
+    p.append(el("div", {style: "margin-top:14px"}, tablaC("¿Cómo es mi imagen por canal?", sub, () => tablaTS(["canal", "sub"], {grupos: gUN, medidas: [md], meses}), {col1: "Canal / Subcanal"})));
+  } else if (pg.vista === "canalmes") {
+    const gUC = gruposTS((c, a) => unCorto(a) + " · " + D.C[c].canal, meses, 0, ["CZA", "UNG"].flatMap(u => CANALES.map(cn => u + " · " + cn)), true);
+    p.append(el("div", {style: "margin-bottom:14px"}, tablaC("¿Cómo es mi comportamiento en cada negocio por canal?", sub, () => tablaTS(["mes"], {grupos: gUC, medidas: [md], meses}), {col1: "Mes"})));
+    p.append(el("div", {class: "grid g2"},
+      tablaC("¿Cómo estoy dividiendo el gasto por cliente?", sub, () => tablaTS(["canal", "cli"], {grupos: gUN, medidas: [md], meses}), {col1: "Canal / Cliente", buscar: true}),
+      tablaC("¿En qué marca estoy gastando?", sub, () => tablaTS(["un", "magr", "marca", "cal"], {grupos: gCanal(0), medidas: [md], meses}), {col1: "UN / Marca agrupada / Marca / Calibre", abrirPrimerNivel: true})));
+  } else if (pg.vista === "cza" || pg.vista === "ung") {
+    const u = pg.vista === "cza" ? 1 : 3, nom = u === 1 ? "cerveza" : "UNG", dseg = u === 1 ? "segc" : "segu";
+    const gSeg = gruposTS((c, a) => DIM[dseg].get(a), meses, u, u === 1 ? SEGMENTOS : ["TOP", "FAM"]);
+    p.append(el("div", {class: "grid g2"},
+      tablaC(`¿Cómo es mi gasto real evolutivo por segmento? (${nom})`, sub, () => tablaTS(["mes"], {grupos: gSeg, medidas: [md], meses, un: u}), {col1: "Mes",
+        nota: u === 3 ? "Segmento UNG: TOP = calibres TOP de Ajustes; FAM = el resto." : ""}),
+      tablaC(`¿Cómo es mi gasto por segmento en cada canal? (${nom})`, sub, () => tablaTS([dseg, "marca"], {grupos: gCanal(u), medidas: [md], meses, un: u}), {col1: "Segmento / Marca"}),
+      tablaC(`¿Cómo divido el gasto por cliente? (${nom})`, `${mesTxt(meses[0])} a ${mesTxt(meses[meses.length - 1])}`, () => tablaTS(["cli"], {medidas: ["desc", "hl", "fact"], meses, un: u}), {col1: "Cliente", buscar: true, limite: 200}),
+      tablaC(`¿Cómo lo distribuyo según mis marcas? (${nom})`, sub, () => tablaTS(["marca", "cal"], {grupos: gCanal(u), medidas: [md], meses, un: u}), {col1: "Marca / Calibre"})));
+  } else {
+    const gMes = {get: (c, a, x) => mesTxt(x.mes), orden: meses.map(mesTxt)};
+    p.append(tablaC("Acciones CMQ - LT", `${TS_MED[pg.medAcc].t} por mes`, () => tablaTS(["tipo", "part", "dacc", "acc"], {grupos: gMes, medidas: [pg.medAcc], meses}),
+      {col1: "Tipo / Participación CMQ / Descripción / Acción", buscar: true, abrirPrimerNivel: true,
+       nota: "Tipo de acción según la descripción: DC… = descentralizada, SC… = bonificación manual, NEGOCIACIÓN… = negociación, el resto = centralizada."}));
+  }
+  return p;
+}};
+
 // ============================================================================ AJUSTES (solo administradores)
 const LOCAL = () => !FB;
 async function guardarConfig(docName, datos, aviso) {
@@ -1552,6 +2004,8 @@ PAGINAS.ajustes = {t: "⚙ Ajustes", soloAdmin: true, sinFiltros: true, lista: "
   listas.append(editorLista(pg.lista));
   p.append(listas);
 
+  p.append(editorWapi());
+
   // ---------- usuarios y corridas
   const g = el("div", {class: "grid g2", style: "margin-top:14px"});
   g.append(editorUsuarios());
@@ -1673,7 +2127,7 @@ function editorUsuarios() {
 
 // ============================================================================ navegación
 let PAG = "diario";
-const ORDEN_PAGINAS = ["diario", "principal", "performance", "kpis", "evolucion", "objetivos", "cierre", "ajustes"];
+const ORDEN_PAGINAS = ["diario", "principal", "performance", "kpis", "evolucion", "comparacion", "objetivos", "ts", "cierre", "ajustes"];
 function dibujarTabs() {
   const n = $("#tabs"); n.innerHTML = "";
   for (const k of ORDEN_PAGINAS) { const p = PAGINAS[k]; if (!p.soloAdmin || D.esAdmin) n.append(el("button", {class: k === PAG ? "on" : "", onclick: () => { PAG = k; try { localStorage.setItem("tablero_pag", k); } catch {} refrescar(); }}, p.t)); }
