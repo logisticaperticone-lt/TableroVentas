@@ -1771,7 +1771,8 @@ PAGINAS.ts = {t: "2.4.1.1 · Informe de Trade Spend", vista: "negocio", medida: 
   if (W.error) p.append(el("div", {class: "card", style: "margin-bottom:12px"}, el("h3", {}, "No pude leer el WAPI"), el("div", {class: "nota"}, W.error)));
   const mw = Object.keys(W.M).sort();
   if (!mw.length) { p.append(el("div", {class: "card"}, el("h3", {}, "Todavía no hay WAPI cargado"), el("div", {class: "nota"}, "Se carga en ⚙ Ajustes → WAPI del mes, con el Excel que manda CMQ."))); return p; }
-  if (!pg.hasta || !mw.includes(pg.hasta)) pg.hasta = mw.filter(m => m <= mes).pop() || mw[mw.length - 1];
+  if (!pg.hasta || !mw.includes(pg.hasta)) {     // por defecto, el último mes con el WAPI completo
+    const ok = mw.filter(m => m <= mes); pg.hasta = ok.filter(m => !factorWapi(m) || m !== ok[ok.length - 1]).pop() || mw[mw.length - 1]; }
   if (!pg.desde || !mw.includes(pg.desde) || pg.desde > pg.hasta) pg.desde = mw.filter(m => m <= pg.hasta && m > sumarMes(pg.hasta, -12))[0];
   const meses = mw.filter(m => m >= pg.desde && m <= pg.hasta);
   const selM = (val, set) => { const s = el("select", {class: "inp", onchange: e => { set(e.target.value); refrescar(); }}); [...mw].reverse().forEach(m => s.append(el("option", {value: m}, mesTxtLargo(m)))); s.value = val; return s; };
