@@ -1653,7 +1653,7 @@ function editorWapi() {
       refrescar();
     };
     return [mesTxtLargo(m), x.archivo || "", nf0.format(x.filas || 0), fMonto(x.desc), fMonto(x.acred),
-            (x.subido ? x.subido.slice(8, 10) + "/" + x.subido.slice(5, 7) + "/" + x.subido.slice(2, 4) + " " + x.subido.slice(11, 16) : "") + (x.por ? " · " + x.por.split("@")[0] : ""),
+            (x.subido ? new Date(x.subido).toLocaleString("es-AR", {day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit"}) : "") + (x.por ? " · " + x.por.split("@")[0] : ""),
             el("span", {style: "display:flex;gap:6px"}, el("button", {class: "btn", style: "padding:2px 8px", onclick: () => abrir(m)}, "Volver a subir"), bor)]; }), 420));
   return card;
 }
